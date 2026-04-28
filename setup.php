@@ -10,7 +10,7 @@ use Glpi\Plugin\Hooks;
 use GlpiPlugin\Tasksmanager\TaskDashboard;
 use GlpiPlugin\Tasksmanager\Workflow;
 
-define('PLUGIN_TASKSMANAGER_VERSION', '1.3.1');
+define('PLUGIN_TASKSMANAGER_VERSION', '1.3.2');
 define('PLUGIN_TASKSMANAGER_MIN_GLPI_VERSION', '11.0.0');
 define('PLUGIN_TASKSMANAGER_MAX_GLPI_VERSION', '11.0.99');
 
