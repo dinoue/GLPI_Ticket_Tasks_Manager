@@ -30,7 +30,10 @@ function plugin_init_tasksmanager(): void
         'Ticket'     => 'plugin_tasksmanager_ticket_add',
         'TicketTask' => 'plugin_tasksmanager_item_add',
     ];
-    $PLUGIN_HOOKS[Hooks::ITEM_UPDATE]['tasksmanager'] = ['TicketTask' => 'plugin_tasksmanager_item_update'];
+    $PLUGIN_HOOKS[Hooks::ITEM_UPDATE]['tasksmanager'] = [
+        'Ticket'     => 'plugin_tasksmanager_ticket_update',
+        'TicketTask' => 'plugin_tasksmanager_item_update',
+    ];
 
     // Workflow tab on tickets
     Plugin::registerClass(TaskDashboard::class, ['addtabon' => ['Ticket']]);

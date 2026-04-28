@@ -130,6 +130,22 @@ function plugin_tasksmanager_install(): bool
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;");
     }
 
+    // -------------------------------------------------------
+    // Table: glpi_plugin_tasksmanager_pending_workflows
+    // Holds a desired workflow for a ticket that is awaiting approval.
+    // Consumed and deleted once the approval is granted.
+    // -------------------------------------------------------
+    if (!$DB->tableExists('glpi_plugin_tasksmanager_pending_workflows')) {
+        $DB->doQuery("CREATE TABLE `glpi_plugin_tasksmanager_pending_workflows` (
+            `id`            INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            `tickets_id`    INT UNSIGNED NOT NULL,
+            `workflows_id`  INT UNSIGNED NOT NULL,
+            `date_creation` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `tickets_id` (`tickets_id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;");
+    }
+
     // Create plugin document directory
     $plugin_doc_dir = GLPI_PLUGIN_DOC_DIR . '/tasksmanager';
     if (!is_dir($plugin_doc_dir)) {
@@ -149,6 +165,7 @@ function plugin_tasksmanager_uninstall(): bool
     global $DB;
 
     $tables = [
+        'glpi_plugin_tasksmanager_pending_workflows',
         'glpi_plugin_tasksmanager_ticket_workflows',
         'glpi_plugin_tasksmanager_workflow_steps',
         'glpi_plugin_tasksmanager_workflows',
@@ -175,9 +192,9 @@ function plugin_tasksmanager_uninstall(): bool
 // -------------------------------------------------------
 
 /**
- * Callback when a Ticket is added — apply workflow from form destination if requested.
- * The workflow ID is injected into the ticket input by WorkflowField::applyConfiguratedValueToInputUsingAnswers().
- * This fires for both direct form submissions and post-approval ticket creation.
+ * Callback when a Ticket is added.
+ * - No approval required  → apply the workflow immediately.
+ * - Approval required     → store in pending_workflows; applied when approval is granted.
  */
 function plugin_tasksmanager_ticket_add(Ticket $item): void
 {
@@ -185,7 +202,59 @@ function plugin_tasksmanager_ticket_add(Ticket $item): void
     if (!$workflows_id) {
         return;
     }
-    \GlpiPlugin\Tasksmanager\Workflow::applyToTicket($item->getID(), $workflows_id);
+
+    global $DB;
+    $tickets_id = $item->getID();
+
+    // Store pending record (consumed by ticket_update when approval is granted)
+    $DB->insert('glpi_plugin_tasksmanager_pending_workflows', [
+        'tickets_id'   => $tickets_id,
+        'workflows_id' => $workflows_id,
+    ]);
+
+    // CommonITILValidation::NONE = 1 → no approval required, apply now
+    $validation = (int)($item->fields['global_validation'] ?? \CommonITILValidation::NONE);
+    if ($validation === \CommonITILValidation::NONE) {
+        plugin_tasksmanager_apply_pending_workflow($tickets_id);
+    }
+    // Otherwise leave the pending record — plugin_tasksmanager_ticket_update will pick it up
+}
+
+/**
+ * Callback when a Ticket is updated.
+ * Applies the pending workflow as soon as global_validation changes to ACCEPTED.
+ */
+function plugin_tasksmanager_ticket_update(Ticket $item): void
+{
+    // Only act when global_validation changed in this update
+    if (!array_key_exists('global_validation', $item->oldvalues ?? [])) {
+        return;
+    }
+    if ((int)$item->fields['global_validation'] !== \CommonITILValidation::ACCEPTED) {
+        return;
+    }
+    plugin_tasksmanager_apply_pending_workflow($item->getID());
+}
+
+/**
+ * Consume a pending workflow record and apply it to the ticket.
+ */
+function plugin_tasksmanager_apply_pending_workflow(int $tickets_id): void
+{
+    global $DB;
+
+    $iter = $DB->request([
+        'FROM'  => 'glpi_plugin_tasksmanager_pending_workflows',
+        'WHERE' => ['tickets_id' => $tickets_id],
+        'LIMIT' => 1,
+    ]);
+    if (count($iter) === 0) {
+        return;
+    }
+
+    $row = $iter->current();
+    $DB->delete('glpi_plugin_tasksmanager_pending_workflows', ['tickets_id' => $tickets_id]);
+    \GlpiPlugin\Tasksmanager\Workflow::applyToTicket($tickets_id, (int)$row['workflows_id']);
 }
 
 /**
