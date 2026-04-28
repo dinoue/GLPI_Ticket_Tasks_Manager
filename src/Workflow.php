@@ -189,6 +189,36 @@ class Workflow extends CommonDBTM
             return false;
         }
 
+        // Update ticket assignment to match the new step's template
+        if (!empty($template->fields['users_id_tech']) || !empty($template->fields['groups_id_tech'])) {
+            $ticket_user  = new \Ticket_User();
+            $group_ticket = new \Group_Ticket();
+
+            $ticket_user->deleteByCriteria([
+                'tickets_id' => $tickets_id,
+                'type'       => \CommonITILActor::ASSIGN,
+            ]);
+            $group_ticket->deleteByCriteria([
+                'tickets_id' => $tickets_id,
+                'type'       => \CommonITILActor::ASSIGN,
+            ]);
+
+            if (!empty($template->fields['users_id_tech'])) {
+                $ticket_user->add([
+                    'tickets_id' => $tickets_id,
+                    'users_id'   => (int)$template->fields['users_id_tech'],
+                    'type'       => \CommonITILActor::ASSIGN,
+                ]);
+            }
+            if (!empty($template->fields['groups_id_tech'])) {
+                $group_ticket->add([
+                    'tickets_id' => $tickets_id,
+                    'groups_id'  => (int)$template->fields['groups_id_tech'],
+                    'type'       => \CommonITILActor::ASSIGN,
+                ]);
+            }
+        }
+
         $DB->update(
             'glpi_plugin_tasksmanager_taskstates',
             [
