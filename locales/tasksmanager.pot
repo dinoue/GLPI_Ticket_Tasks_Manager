@@ -1,0 +1,81 @@
+# Tasks Manager - Translation template
+# Copyright (C) 2026
+# This file is distributed under the GPL-3.0-or-later license.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: GLPI Plugin - Tasks Manager 1.0.0\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-04-21 00:00+0000\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: \n"
+"Language-Team: \n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "Tasks Manager"
+msgstr ""
+
+msgid "Task State"
+msgid_plural "Task States"
+msgstr[0] ""
+msgstr[1] ""
+
+msgid "Pending"
+msgstr ""
+
+msgid "In Progress"
+msgstr ""
+
+msgid "Blocked"
+msgstr ""
+
+msgid "In Review"
+msgstr ""
+
+msgid "Done"
+msgstr ""
+
+msgid "Due date"
+msgstr ""
+
+msgid "Progress"
+msgstr ""
+
+msgid "Assigned to"
+msgstr ""
+
+msgid "Notes"
+msgstr ""
+
+msgid "Task Workflow Board"
+msgstr ""
+
+msgid "Tasks Manager Configuration"
+msgstr ""
+
+msgid "Tasks Manager Settings"
+msgstr ""
+
+msgid "Default task priority"
+msgstr ""
+
+msgid "Enable notifications"
+msgstr ""
+
+msgid "Configuration updated successfully"
+msgstr ""
+
+msgid "Status updated"
+msgstr ""
+
+msgid "Update failed"
+msgstr ""
+
+msgid "No task states tracked yet. Add tasks to this ticket to see them here."
+msgstr ""
+
+msgid "Tasks Manager - Global Overview"
+msgstr ""

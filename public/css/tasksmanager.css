@@ -1,0 +1,98 @@
+/* Tasks Manager - Plugin Styles */
+
+/* ── Task board ─────────────────────────────────────────────────────────── */
+
+.tasksmanager-board {
+    padding: 1rem 0;
+}
+
+.tasksmanager-board h5 {
+    margin-bottom: 1rem;
+}
+
+.tasksmanager-board .table {
+    margin-bottom: 0;
+}
+
+/* Status badges */
+.badge.bg-tasksmanager-pending     { background-color: #6c757d !important; color: #fff; }
+.badge.bg-tasksmanager-in_progress { background-color: #0d6efd !important; color: #fff; }
+.badge.bg-tasksmanager-blocked     { background-color: #dc3545 !important; color: #fff; }
+.badge.bg-tasksmanager-review      { background-color: #fd7e14 !important; color: #fff; }
+.badge.bg-tasksmanager-done        { background-color: #198754 !important; color: #fff; }
+
+/* Progress bar inside table */
+.tasksmanager-board .progress {
+    height: 20px;
+    border-radius: 4px;
+}
+
+.tasksmanager-board .progress-bar {
+    font-size: 0.75rem;
+    line-height: 20px;
+}
+
+/* ── Workflow panel (ticket tab) ────────────────────────────────────────── */
+
+.tasksmanager-workflow-panel .card-header {
+    background: transparent;
+    border-bottom: 1px solid rgba(0,0,0,.1);
+}
+
+.tm-wf-progress {
+    width: 220px;
+    height: 10px;
+    border-radius: 6px;
+}
+
+/* ── Workflow step list (drag-and-drop, matches GLPI column-picker style) ─ */
+
+.tm-steps-list {
+    border: 1px solid rgba(0,0,0,.125);
+    border-radius: 0.375rem;
+    min-height: 48px;
+}
+
+.tm-steps-list .tm-step-row {
+    border-left: none;
+    border-right: none;
+    border-radius: 0 !important;
+    padding: 0.6rem 1rem;
+    user-select: none;
+}
+
+.tm-steps-list .tm-step-row:first-child {
+    border-top: none;
+}
+
+.tm-steps-list .tm-step-row:last-child {
+    border-bottom: none;
+}
+
+/* Ghost placeholder while dragging */
+.tm-sortable-ghost {
+    opacity: 0.4;
+    background-color: #e9ecef;
+}
+
+/* Drag handle — same look as GLPI's ⠿ grip */
+.drag-handle {
+    cursor: grab;
+    font-size: 1.1rem;
+    color: #adb5bd;
+    flex-shrink: 0;
+}
+
+.drag-handle:active {
+    cursor: grabbing;
+}
+
+/* ── Global dashboard ───────────────────────────────────────────────────── */
+
+.tasksmanager-global-dashboard {
+    padding: 1rem;
+}
+
+.tasksmanager-global-dashboard h2 {
+    margin-bottom: 1.5rem;
+}

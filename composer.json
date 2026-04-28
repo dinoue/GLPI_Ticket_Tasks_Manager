@@ -1,0 +1,14 @@
+{
+    "name": "glpi-plugin/tasksmanager",
+    "description": "GLPI Plugin - Ticket Tasks Management with extended workflow states",
+    "type": "glpi-plugin",
+    "license": "GPL-3.0-or-later",
+    "require": {
+        "php": ">=8.1"
+    },
+    "autoload": {
+        "psr-4": {
+            "GlpiPlugin\\Tasksmanager\\": "src/"
+        }
+    }
+}
