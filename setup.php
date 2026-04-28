@@ -26,7 +26,10 @@ function plugin_init_tasksmanager(): void
     ];
 
     // Hook ticket task events for auto-advance
-    $PLUGIN_HOOKS[Hooks::ITEM_ADD]['tasksmanager']    = ['TicketTask' => 'plugin_tasksmanager_item_add'];
+    $PLUGIN_HOOKS[Hooks::ITEM_ADD]['tasksmanager']    = [
+        'Ticket'     => 'plugin_tasksmanager_ticket_add',
+        'TicketTask' => 'plugin_tasksmanager_item_add',
+    ];
     $PLUGIN_HOOKS[Hooks::ITEM_UPDATE]['tasksmanager'] = ['TicketTask' => 'plugin_tasksmanager_item_update'];
 
     // Workflow tab on tickets

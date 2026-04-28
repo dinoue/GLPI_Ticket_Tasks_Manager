@@ -175,6 +175,20 @@ function plugin_tasksmanager_uninstall(): bool
 // -------------------------------------------------------
 
 /**
+ * Callback when a Ticket is added — apply workflow from form destination if requested.
+ * The workflow ID is injected into the ticket input by WorkflowField::applyConfiguratedValueToInputUsingAnswers().
+ * This fires for both direct form submissions and post-approval ticket creation.
+ */
+function plugin_tasksmanager_ticket_add(Ticket $item): void
+{
+    $workflows_id = (int)($item->input['_plugin_tasksmanager_workflows_id'] ?? 0);
+    if (!$workflows_id) {
+        return;
+    }
+    \GlpiPlugin\Tasksmanager\Workflow::applyToTicket($item->getID(), $workflows_id);
+}
+
+/**
  * Callback when a TicketTask is added — create a basic taskstate record.
  */
 function plugin_tasksmanager_item_add(TicketTask $item): void

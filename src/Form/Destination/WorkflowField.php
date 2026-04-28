@@ -67,7 +67,12 @@ final class WorkflowField extends AbstractConfigField
         array $input,
         AnswersSet $answers_set
     ): array {
-        // Workflow is applied after the ticket exists — nothing to do here.
+        if ($config instanceof WorkflowFieldConfig) {
+            $workflows_id = (int)$config->getValue();
+            if ($workflows_id) {
+                $input['_plugin_tasksmanager_workflows_id'] = $workflows_id;
+            }
+        }
         return $input;
     }
 
@@ -77,20 +82,7 @@ final class WorkflowField extends AbstractConfigField
         AnswersSet $answers_set,
         array $created_objects
     ): void {
-        if (!($config instanceof WorkflowFieldConfig)) {
-            return;
-        }
-
-        $workflows_id = (int)$config->getValue();
-        if (!$workflows_id) {
-            return;
-        }
-
-        foreach ($created_objects as $object) {
-            if ($object instanceof Ticket) {
-                Workflow::applyToTicket($object->getID(), $workflows_id);
-                break;
-            }
-        }
+        // Workflow is applied via the Ticket ITEM_ADD hook using
+        // _plugin_tasksmanager_workflows_id set in applyConfiguratedValueToInputUsingAnswers.
     }
 }
