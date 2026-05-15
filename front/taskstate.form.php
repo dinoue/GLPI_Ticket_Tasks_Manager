@@ -18,12 +18,12 @@ Session::checkRight('ticket', READ);
 $taskstate = new TaskState();
 
 if (isset($_POST['update'])) {
-    Session::checkCSRF($_POST);
+    // CSRF already validated by GLPI 11 CheckCsrfListener
     $taskstate->check($_POST['id'], UPDATE);
     $taskstate->update($_POST);
     Html::back();
 } elseif (isset($_POST['purge'])) {
-    Session::checkCSRF($_POST);
+    // CSRF already validated by GLPI 11 CheckCsrfListener
     $taskstate->check($_POST['id'], PURGE);
     $taskstate->delete($_POST, 1);
     $taskstate->redirectToList();

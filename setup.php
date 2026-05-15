@@ -10,7 +10,7 @@ use Glpi\Plugin\Hooks;
 use GlpiPlugin\Tasksmanager\TaskDashboard;
 use GlpiPlugin\Tasksmanager\Workflow;
 
-define('PLUGIN_TASKSMANAGER_VERSION', '1.3.2');
+define('PLUGIN_TASKSMANAGER_VERSION', '1.3.9');
 define('PLUGIN_TASKSMANAGER_MIN_GLPI_VERSION', '11.0.0');
 define('PLUGIN_TASKSMANAGER_MAX_GLPI_VERSION', '11.0.99');
 
@@ -19,6 +19,9 @@ function plugin_init_tasksmanager(): void
     global $PLUGIN_HOOKS;
 
     $PLUGIN_HOOKS[Hooks::CSRF_COMPLIANT]['tasksmanager'] = true;
+
+    // Wrench icon on Setup > Plugins → opens the workflow list.
+    $PLUGIN_HOOKS['config_page']['tasksmanager'] = 'front/workflow.list.php';
 
     // Workflow builder under Tools menu
     $PLUGIN_HOOKS['menu_toadd']['tasksmanager'] = [
@@ -38,13 +41,28 @@ function plugin_init_tasksmanager(): void
     // Workflow tab on tickets
     Plugin::registerClass(TaskDashboard::class, ['addtabon' => ['Ticket']]);
 
-    // Workflow field in form destinations
-    if (class_exists(\Glpi\Form\Destination\FormDestinationManager::class)) {
-        \Glpi\Form\Destination\FormDestinationManager::getInstance()
-            ->registerPluginCommonITILConfigField(
-                \Glpi\Form\Destination\FormDestinationTicket::class,
-                new \GlpiPlugin\Tasksmanager\Form\Destination\WorkflowField()
-            );
+    // Auto-refresh page when a ticket task is marked as Done so the workflow
+    // tab and group assignment are always in sync with the server state.
+    $PLUGIN_HOOKS[Hooks::ADD_JAVASCRIPT]['tasksmanager'] = ['public/js/workflow-refresh.js'];
+
+    // Workflow field in form destinations.
+    // Wrapped defensively: during early boot (Plugin::getPluginInformation)
+    // the form-destination classes or this plugin's autoloader may not yet
+    // be available, and an uncaught error here makes GLPI fail to load
+    // plugin information with the cryptic warning seen previously.
+    try {
+        if (
+            class_exists('Glpi\\Form\\Destination\\FormDestinationManager')
+            && class_exists('GlpiPlugin\\Tasksmanager\\Form\\Destination\\WorkflowField')
+        ) {
+            \Glpi\Form\Destination\FormDestinationManager::getInstance()
+                ->registerPluginCommonITILConfigField(
+                    \Glpi\Form\Destination\FormDestinationTicket::class,
+                    new \GlpiPlugin\Tasksmanager\Form\Destination\WorkflowField()
+                );
+        }
+    } catch (\Throwable $e) {
+        // Silently skip — form integration is optional during plugin info load.
     }
 }
 
@@ -53,7 +71,7 @@ function plugin_version_tasksmanager(): array
     return [
         'name'         => 'Tasks Manager',
         'version'      => PLUGIN_TASKSMANAGER_VERSION,
-        'author'       => 'TC Transcontinental',
+        'author'       => 'Christian Bernard',
         'license'      => 'GPL-3.0-or-later',
         'homepage'     => '',
         'requirements' => [

@@ -22,8 +22,9 @@ $is_new      = ($workflow_id === 0);
 
 // ── Save workflow metadata ─────────────────────────────────────────────────
 if (isset($_POST['save_workflow'])) {
-    $name      = trim($_POST['name'] ?? '');
-    $is_active = isset($_POST['is_active']) ? 1 : 0;
+    $name                 = trim($_POST['name'] ?? '');
+    $is_active            = isset($_POST['is_active']) ? 1 : 0;
+    $groups_id_completion = (int)($_POST['groups_id_completion'] ?? 0);
 
     if ($name === '') {
         Session::addMessageAfterRedirect(__('Name is required.', 'tasksmanager'), true, ERROR);
@@ -32,17 +33,22 @@ if (isset($_POST['save_workflow'])) {
 
     if ($is_new) {
         $DB->insert('glpi_plugin_tasksmanager_workflows', [
-            'name'          => $name,
-            'is_active'     => $is_active,
-            'date_creation' => date('Y-m-d H:i:s'),
+            'name'                 => $name,
+            'is_active'            => $is_active,
+            'groups_id_completion' => $groups_id_completion,
+            'date_creation'        => date('Y-m-d H:i:s'),
         ]);
         $workflow_id = $DB->insertId();
         Session::addMessageAfterRedirect(__('Workflow created.', 'tasksmanager'), true, INFO);
         Html::redirect('workflow.form.php?id=' . $workflow_id);
     } else {
         $DB->update('glpi_plugin_tasksmanager_workflows',
-            ['name' => $name, 'is_active' => $is_active],
-            ['id'   => $workflow_id]
+            [
+                'name'                 => $name,
+                'is_active'            => $is_active,
+                'groups_id_completion' => $groups_id_completion,
+            ],
+            ['id' => $workflow_id]
         );
         Session::addMessageAfterRedirect(__('Workflow saved.', 'tasksmanager'), true, INFO);
         Html::redirect($_SERVER['REQUEST_URI']);
@@ -71,7 +77,7 @@ if (!$is_new) {
         'ORDER' => ['wfs.step_order ASC'],
     ]));
 } else {
-    $wf_data = ['name' => '', 'is_active' => 1];
+    $wf_data = ['name' => '', 'is_active' => 1, 'groups_id_completion' => 0];
     $steps   = [];
 }
 
@@ -119,6 +125,24 @@ Html::header(
                            <?= $wf_data['is_active'] ? 'checked' : '' ?>>
                     <label class="form-check-label" for="wf-active"><?= __('Active') ?></label>
                 </div>
+
+                <div class="mb-3">
+                    <label class="form-label fw-bold" for="wf-completion-group">
+                        <?= __('Reassign ticket to group on completion', 'tasksmanager') ?>
+                    </label>
+                    <div class="text-muted small mb-1">
+                        <?= __('When the last step is marked done, the ticket\'s assigned group becomes this one. Leave empty to keep the last step\'s group.', 'tasksmanager') ?>
+                    </div>
+                    <?php
+                    Group::dropdown([
+                        'name'      => 'groups_id_completion',
+                        'value'     => (int)($wf_data['groups_id_completion'] ?? 0),
+                        'condition' => ['is_assign' => 1],
+                        'display_emptychoice' => true,
+                    ]);
+                    ?>
+                </div>
+
                 <button type="submit" name="save_workflow" class="btn btn-primary">
                     <i class="ti ti-device-floppy me-1"></i><?= __('Save') ?>
                 </button>

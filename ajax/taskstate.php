@@ -19,7 +19,7 @@ $action = $_POST['action'] ?? $_GET['action'] ?? '';
 try {
     switch ($action) {
         case 'update_status':
-            Session::checkCSRF($_POST);
+            // CSRF already validated by GLPI 11 CheckCsrfListener before this code runs
             $taskstate = new TaskState();
             $id = (int)($_POST['id'] ?? 0);
 

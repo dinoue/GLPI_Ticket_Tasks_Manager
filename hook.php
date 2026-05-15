@@ -81,16 +81,25 @@ function plugin_tasksmanager_install(): bool
     // -------------------------------------------------------
     if (!$DB->tableExists('glpi_plugin_tasksmanager_workflows')) {
         $DB->doQuery("CREATE TABLE `glpi_plugin_tasksmanager_workflows` (
-            `id`            INT UNSIGNED NOT NULL AUTO_INCREMENT,
-            `name`          VARCHAR(255) NOT NULL,
-            `description`   TEXT         NULL,
-            `is_active`     TINYINT      NOT NULL DEFAULT 1,
-            `date_creation` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            `date_mod`      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            `id`                    INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            `name`                  VARCHAR(255) NOT NULL,
+            `description`           TEXT         NULL,
+            `is_active`             TINYINT      NOT NULL DEFAULT 1,
+            `groups_id_completion`  INT UNSIGNED NOT NULL DEFAULT 0,
+            `date_creation`         TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            `date_mod`              TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (`id`),
-            KEY `name`      (`name`),
-            KEY `is_active` (`is_active`)
+            KEY `name`                 (`name`),
+            KEY `is_active`            (`is_active`),
+            KEY `groups_id_completion` (`groups_id_completion`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;");
+    } else {
+        // Upgrade: add groups_id_completion if missing
+        if (!$DB->fieldExists('glpi_plugin_tasksmanager_workflows', 'groups_id_completion')) {
+            $DB->doQuery("ALTER TABLE `glpi_plugin_tasksmanager_workflows`
+                ADD `groups_id_completion` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `is_active`,
+                ADD KEY `groups_id_completion` (`groups_id_completion`)");
+        }
     }
 
     // -------------------------------------------------------
@@ -226,7 +235,6 @@ function plugin_tasksmanager_ticket_add(Ticket $item): void
  */
 function plugin_tasksmanager_ticket_update(Ticket $item): void
 {
-    // Only act when global_validation changed in this update
     if (!array_key_exists('global_validation', $item->oldvalues ?? [])) {
         return;
     }
@@ -286,20 +294,23 @@ function plugin_tasksmanager_item_add(TicketTask $item): void
 /**
  * Callback when a TicketTask is updated.
  * When a task is marked done (state=2) and it belongs to a workflow step,
- * this automatically creates the next step's task on the ticket and updates
- * the ticket's assigned technician/group to match the new task's template.
+ * this automatically creates the next step's task on the ticket and replaces
+ * the ticket's ASSIGN actors with the new task's template tech/group.
+ * Paired with js/workflow-refresh.js which reloads the page after the inline
+ * checkbox XHR succeeds, so the user can't click Save with stale form data.
  */
 function plugin_tasksmanager_item_update(TicketTask $item): void
 {
     global $DB;
 
-    // Act when the task reaches state=2 (Done), whether via checkbox or status dropdown
-    $new_state = isset($item->input['state']) ? (int)$item->input['state'] : (int)$item->fields['state'];
-    if ($new_state !== 2) {
+    // Only act when state is explicitly being set to 2 in this specific update.
+    // Do NOT fall back to $item->fields['state']: that would fire again on a
+    // ticket Save that re-submits the task when it is already done.
+    if (!isset($item->input['state']) || (int)$item->input['state'] !== 2) {
         return;
     }
 
-    // Sync our status tracking
+    // Sync our internal status tracking for the dashboard
     $DB->update(
         'glpi_plugin_tasksmanager_taskstates',
         ['plugin_status' => 'done', 'progress' => 100],
@@ -315,7 +326,6 @@ function plugin_tasksmanager_item_update(TicketTask $item): void
         ],
         'LIMIT' => 1,
     ]);
-
     if (count($taskstate_iter) === 0) {
         return;
     }
@@ -330,7 +340,6 @@ function plugin_tasksmanager_item_update(TicketTask $item): void
         'WHERE' => ['id' => $ticket_workflows_id, 'status' => 'active'],
         'LIMIT' => 1,
     ]);
-
     if (count($tw_iter) === 0) {
         return;
     }
@@ -339,7 +348,13 @@ function plugin_tasksmanager_item_update(TicketTask $item): void
     $workflows_id    = (int)$ticket_workflow['workflows_id'];
     $tickets_id      = (int)$ticket_workflow['tickets_id'];
 
-    // Find the next step after the current one
+    // Double-advance guard: if current_step is already past this task's step,
+    // a prior update has already advanced (e.g. checkbox XHR before a Save).
+    if ((int)$ticket_workflow['current_step'] > $current_step_order) {
+        return;
+    }
+
+    // Find the next step
     $next_iter = $DB->request([
         'FROM'  => 'glpi_plugin_tasksmanager_workflow_steps',
         'WHERE' => [
@@ -351,12 +366,30 @@ function plugin_tasksmanager_item_update(TicketTask $item): void
     ]);
 
     if (count($next_iter) === 0) {
-        // All steps done — mark workflow complete
+        // All steps done — mark workflow complete and, if the workflow has a
+        // groups_id_completion configured, reassign the ticket to that group.
         $DB->update(
             'glpi_plugin_tasksmanager_ticket_workflows',
             ['status' => 'completed'],
             ['id' => $ticket_workflows_id]
         );
+
+        $wf_iter = $DB->request([
+            'FROM'  => 'glpi_plugin_tasksmanager_workflows',
+            'WHERE' => ['id' => $workflows_id],
+            'LIMIT' => 1,
+        ]);
+        if (count($wf_iter) > 0) {
+            $wf = $wf_iter->current();
+            $completion_group = (int)($wf['groups_id_completion'] ?? 0);
+            if ($completion_group > 0) {
+                \GlpiPlugin\Tasksmanager\Workflow::swapAssignActors(
+                    $tickets_id,
+                    0,
+                    $completion_group
+                );
+            }
+        }
         return;
     }
 

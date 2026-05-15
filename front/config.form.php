@@ -15,12 +15,8 @@ if (!$plugin->isInstalled('tasksmanager') || !$plugin->isActivated('tasksmanager
 
 Session::checkRight('config', UPDATE);
 
-// Generate CSRF token BEFORE Html::header() so it is persisted to session
-// before GLPI 11 flushes the session during header rendering.
-$csrf_token = Session::getNewCSRFToken();
-
 if (isset($_POST['update'])) {
-    Session::checkCSRF($_POST);
+    // CSRF already validated by GLPI 11 CheckCsrfListener
 
     Config::setConfigValue('default_priority', $_POST['default_priority'] ?? '3');
     Config::setConfigValue('enable_notifications', $_POST['enable_notifications'] ?? '1');
@@ -40,6 +36,6 @@ Html::header(
     'plugins'
 );
 
-Config::showConfigForm($csrf_token);
+Config::showConfigForm();
 
 Html::footer();

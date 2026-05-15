@@ -1,8 +1,15 @@
 {
-    "name": "glpi-plugin/tasksmanager",
-    "description": "GLPI Plugin - Ticket Tasks Management with extended workflow states",
+    "name": "cbernard/tasksmanager",
+    "description": "GLPI 11 plugin: workflow engine for ticket tasks based on ordered task templates.",
     "type": "glpi-plugin",
     "license": "GPL-3.0-or-later",
+    "homepage": "https://github.com/cbernard/tasksmanager",
+    "authors": [
+        {
+            "name": "Christian Bernard",
+            "homepage": "https://github.com/cbernard"
+        }
+    ],
     "require": {
         "php": ">=8.1"
     },

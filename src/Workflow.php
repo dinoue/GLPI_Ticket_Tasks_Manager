@@ -182,41 +182,22 @@ class Workflow extends CommonDBTM
             $input['groups_id_tech'] = (int)$template->fields['groups_id_tech'];
         }
 
+        // IMPORTANT: swap the ticket's ASSIGN actors BEFORE creating the task,
+        // so GLPI's "new task" notification (sent inside TicketTask::add())
+        // goes to the new step's team, not the previous one.
+        if (!empty($template->fields['users_id_tech']) || !empty($template->fields['groups_id_tech'])) {
+            self::swapAssignActors(
+                $tickets_id,
+                (int)($template->fields['users_id_tech']  ?? 0),
+                (int)($template->fields['groups_id_tech'] ?? 0)
+            );
+        }
+
         $task        = new \TicketTask();
         $new_task_id = $task->add($input);
 
         if (!$new_task_id) {
             return false;
-        }
-
-        // Update ticket assignment to match the new step's template
-        if (!empty($template->fields['users_id_tech']) || !empty($template->fields['groups_id_tech'])) {
-            $ticket_user  = new \Ticket_User();
-            $group_ticket = new \Group_Ticket();
-
-            $ticket_user->deleteByCriteria([
-                'tickets_id' => $tickets_id,
-                'type'       => \CommonITILActor::ASSIGN,
-            ]);
-            $group_ticket->deleteByCriteria([
-                'tickets_id' => $tickets_id,
-                'type'       => \CommonITILActor::ASSIGN,
-            ]);
-
-            if (!empty($template->fields['users_id_tech'])) {
-                $ticket_user->add([
-                    'tickets_id' => $tickets_id,
-                    'users_id'   => (int)$template->fields['users_id_tech'],
-                    'type'       => \CommonITILActor::ASSIGN,
-                ]);
-            }
-            if (!empty($template->fields['groups_id_tech'])) {
-                $group_ticket->add([
-                    'tickets_id' => $tickets_id,
-                    'groups_id'  => (int)$template->fields['groups_id_tech'],
-                    'type'       => \CommonITILActor::ASSIGN,
-                ]);
-            }
         }
 
         $DB->update(
@@ -229,5 +210,76 @@ class Workflow extends CommonDBTM
         );
 
         return true;
+    }
+
+    /**
+     * Replace the ticket's ASSIGN actors (tech + group) while preserving
+     * requesters and observers untouched.
+     *
+     * Goes through Ticket::update(['_actors' => …]) — the canonical GLPI 11
+     * path — so the actor-service cache is invalidated and the sidebar
+     * reflects the new assignment immediately on reload. Direct inserts to
+     * glpi_groups_tickets / glpi_users_tickets bypass that cache and leave
+     * the sidebar showing the old assignment.
+     *
+     * Pass 0 (or a falsy value) for $new_user_id / $new_group_id to skip
+     * adding that actor type.
+     */
+    public static function swapAssignActors(int $tickets_id, int $new_user_id, int $new_group_id): void
+    {
+        global $DB;
+
+        $actors = ['requester' => [], 'observer' => [], 'assign' => []];
+
+        // Preserve current requesters and observers — both users and groups
+        $type_map = [
+            \CommonITILActor::REQUESTER => 'requester',
+            \CommonITILActor::OBSERVER  => 'observer',
+        ];
+
+        foreach ($type_map as $type_const => $type_key) {
+            foreach ($DB->request([
+                'FROM'  => 'glpi_tickets_users',
+                'WHERE' => ['tickets_id' => $tickets_id, 'type' => $type_const],
+            ]) as $row) {
+                $actors[$type_key][] = [
+                    'itemtype'          => 'User',
+                    'items_id'          => (int)$row['users_id'],
+                    'use_notification'  => $row['use_notification'] ?? 1,
+                    'alternative_email' => $row['alternative_email'] ?? '',
+                ];
+            }
+            foreach ($DB->request([
+                'FROM'  => 'glpi_groups_tickets',
+                'WHERE' => ['tickets_id' => $tickets_id, 'type' => $type_const],
+            ]) as $row) {
+                $actors[$type_key][] = [
+                    'itemtype' => 'Group',
+                    'items_id' => (int)$row['groups_id'],
+                ];
+            }
+        }
+
+        // Build the new ASSIGN actor set
+        if ($new_user_id > 0) {
+            $actors['assign'][] = [
+                'itemtype'          => 'User',
+                'items_id'          => $new_user_id,
+                'use_notification'  => 1,
+                'alternative_email' => '',
+            ];
+        }
+        if ($new_group_id > 0) {
+            $actors['assign'][] = [
+                'itemtype' => 'Group',
+                'items_id' => $new_group_id,
+            ];
+        }
+
+        $ticket = new \Ticket();
+        $ticket->update([
+            'id'      => $tickets_id,
+            '_actors' => $actors,
+        ]);
     }
 }

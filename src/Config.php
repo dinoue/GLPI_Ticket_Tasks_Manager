@@ -80,7 +80,7 @@ class Config extends CommonDBTM
     /**
      * Display the configuration form
      */
-    public static function showConfigForm(string $csrf_token = ''): void
+    public static function showConfigForm(): void
     {
         if (!Session::haveRight('config', UPDATE)) {
             return;
@@ -90,7 +90,9 @@ class Config extends CommonDBTM
         $enable_notifications  = self::getConfigValue('enable_notifications', '1');
 
         echo '<form method="post" action="' . htmlspecialchars($_SERVER['REQUEST_URI']) . '">';
-        echo '<input type="hidden" name="_glpi_csrf_token" value="' . htmlspecialchars($csrf_token) . '">';
+        echo '<input type="hidden" name="_glpi_csrf_token" class="glpi-csrf-token" value="">';
+        echo '<script>document.querySelector(".glpi-csrf-token").value=document.querySelector("meta[property=\'glpi:csrf_token\']")?.getAttribute("content")??"";'
+           . '</script>';
 
         echo '<div class="card">';
         echo '<div class="card-header"><h3>' . __('Tasks Manager Settings', 'tasksmanager') . '</h3></div>';

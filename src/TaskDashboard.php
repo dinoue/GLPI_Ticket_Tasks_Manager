@@ -67,7 +67,10 @@ class TaskDashboard extends CommonGLPI
             $tw = $tw_iter->current();
 
             // Total steps and current position
-            $all_steps = iterator_to_array($DB->request([
+            // iterator_to_array on a GLPI DBmysqlIterator preserves wfs.id as
+            // the array key. We need positional 0..N-1 indices for "step N/total",
+            // so re-key with array_values().
+            $all_steps = array_values(iterator_to_array($DB->request([
                 'SELECT'    => ['wfs.id', 'wfs.step_order', 'tt.name AS tpl_name'],
                 'FROM'      => 'glpi_plugin_tasksmanager_workflow_steps AS wfs',
                 'LEFT JOIN' => [
@@ -75,7 +78,7 @@ class TaskDashboard extends CommonGLPI
                 ],
                 'WHERE' => ['wfs.workflows_id' => $tw['workflows_id']],
                 'ORDER' => ['wfs.step_order ASC'],
-            ]));
+            ])));
             $total    = count($all_steps);
             $position = 0;
             foreach ($all_steps as $i => $s) {
@@ -143,8 +146,37 @@ class TaskDashboard extends CommonGLPI
             echo '</tbody></table>';
 
         } else {
-            // No active workflow — show selector
-            echo '<p class="text-muted">' . __('No active workflow on this ticket.', 'tasksmanager') . '</p>';
+            // No active workflow — show selector. If a workflow was previously
+            // completed on this ticket, surface that as a confirmation banner
+            // so the user knows the prior run finished cleanly.
+            $completed_iter = $DB->request([
+                'SELECT'    => ['wf.name AS wf_name', 'tw.date_mod'],
+                'FROM'      => 'glpi_plugin_tasksmanager_ticket_workflows AS tw',
+                'LEFT JOIN' => [
+                    'glpi_plugin_tasksmanager_workflows AS wf' => ['ON' => ['tw' => 'workflows_id', 'wf' => 'id']],
+                ],
+                'WHERE' => ['tw.tickets_id' => $tickets_id, 'tw.status' => 'completed'],
+                'ORDER' => ['tw.date_mod DESC'],
+                'LIMIT' => 1,
+            ]);
+
+            if (count($completed_iter) > 0) {
+                $done = $completed_iter->current();
+                echo '<div class="alert alert-success d-flex align-items-center">';
+                echo '<i class="ti ti-circle-check me-2"></i>';
+                echo '<div>';
+                echo sprintf(
+                    __('Workflow %s completed.', 'tasksmanager'),
+                    '<strong>' . htmlspecialchars($done['wf_name'] ?? '') . '</strong>'
+                );
+                if (!empty($done['date_mod'])) {
+                    echo ' <span class="text-muted small ms-2">'
+                        . Html::convDateTime($done['date_mod']) . '</span>';
+                }
+                echo '</div></div>';
+            } else {
+                echo '<p class="text-muted">' . __('No active workflow on this ticket.', 'tasksmanager') . '</p>';
+            }
 
             if ($can_edit) {
                 $workflows = Workflow::getDropdownOptions();

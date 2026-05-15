@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2563EB"/>
+      <stop offset="100%" stop-color="#1D4ED8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background rounded square -->
+  <rect width="128" height="128" rx="22" fill="url(#bg)"/>
+
+  <!-- ── Card 1 : Done ───────────────────────────────────────── -->
+  <rect x="14" y="10" width="88" height="28" rx="6" fill="white" opacity="0.18"/>
+  <!-- Green left accent bar -->
+  <rect x="14" y="10" width="6"  height="28" rx="3" fill="#22C55E"/>
+  <!-- Green check circle -->
+  <circle cx="35" cy="24" r="9" fill="#22C55E"/>
+  <polyline points="30,24 33.5,27.5 40,19.5"
+            fill="none" stroke="white" stroke-width="2.5"
+            stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Text lines -->
+  <rect x="50" y="19" width="44" height="4"  rx="2" fill="white" opacity="0.9"/>
+  <rect x="50" y="27" width="28" height="3"  rx="1.5" fill="white" opacity="0.45"/>
+
+  <!-- ── Arrow 1 → 2 ─────────────────────────────────────────── -->
+  <line x1="58" y1="38" x2="58" y2="46"
+        stroke="white" stroke-width="2" stroke-linecap="round" opacity="0.65"/>
+  <polygon points="53,44 58,51 63,44" fill="white" opacity="0.65"/>
+
+  <!-- ── Card 2 : In Progress ───────────────────────────────── -->
+  <rect x="14" y="50" width="88" height="28" rx="6" fill="white" opacity="0.93"/>
+  <!-- Blue left accent bar -->
+  <rect x="14" y="50" width="6"  height="28" rx="3" fill="#3B82F6"/>
+  <!-- Spinner circle -->
+  <circle cx="35" cy="64" r="9" fill="none" stroke="#E5E7EB" stroke-width="2.5"/>
+  <path d="M35,55 A9,9 0 0,1 44,64"
+        stroke="#2563EB" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <!-- Text lines -->
+  <rect x="50" y="59" width="44" height="4"  rx="2" fill="#1E40AF" opacity="0.8"/>
+  <rect x="50" y="67" width="28" height="3"  rx="1.5" fill="#1E40AF" opacity="0.35"/>
+
+  <!-- ── Arrow 2 → 3 ─────────────────────────────────────────── -->
+  <line x1="58" y1="78" x2="58" y2="86"
+        stroke="white" stroke-width="2" stroke-linecap="round" opacity="0.65"/>
+  <polygon points="53,84 58,91 63,84" fill="white" opacity="0.65"/>
+
+  <!-- ── Card 3 : Pending ───────────────────────────────────── -->
+  <rect x="14" y="90" width="88" height="28" rx="6" fill="white" opacity="0.18"/>
+  <!-- Dimmed left accent bar -->
+  <rect x="14" y="90" width="6"  height="28" rx="3" fill="white" opacity="0.35"/>
+  <!-- Empty circle (not started) -->
+  <circle cx="35" cy="104" r="9" fill="none" stroke="white" stroke-width="2" opacity="0.5"/>
+  <!-- Text lines -->
+  <rect x="50" y="99"  width="44" height="4"  rx="2" fill="white" opacity="0.35"/>
+  <rect x="50" y="107" width="28" height="3"  rx="1.5" fill="white" opacity="0.20"/>
+</svg>
