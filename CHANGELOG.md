@@ -3,6 +3,23 @@
 All notable changes to **Tasks Manager** are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.3.11] — 2026-05-15
+
+### Fixed
+- Task template values of `-1` for `users_id_tech` / `groups_id_tech` (GLPI's
+  "no specific user/group" placeholder) no longer cause a MySQL
+  "Out of range value" error on the `INT UNSIGNED` column. They are now
+  treated as empty for both the new task input and the ticket actor swap.
+
+## [1.3.10] — 2026-05-15
+
+### Fixed
+- Editing an existing followup/answer in the timeline no longer reloads the
+  page mid-edit. Auto-refresh now triggers from a server-set response header
+  (`X-TM-Workflow-Advanced: 1`) that's only sent when our hook actually
+  advances a workflow step. The previous URL-pattern matcher fired on any
+  POST to `/ajax/timeline.php`, which caught followup edits as well.
+
 ## [1.3.9] — 2026-05-15
 
 ### Changed

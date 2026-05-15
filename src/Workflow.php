@@ -172,25 +172,31 @@ class Workflow extends CommonDBTM
             'actiontime'  => (int)($template->fields['actiontime'] ?? 0),
         ];
 
+        // Task templates can store `-1` for users_id_tech / groups_id_tech to
+        // mean "no specific user/group" (GLPI placeholder). Treat anything
+        // <= 0 as empty — both for the task input and the actor swap below —
+        // otherwise the INT UNSIGNED column rejects the insert with
+        // "Out of range value for column 'users_id_tech'".
+        $tpl_user  = (int)($template->fields['users_id_tech']  ?? 0);
+        $tpl_group = (int)($template->fields['groups_id_tech'] ?? 0);
+        if ($tpl_user  < 0) { $tpl_user  = 0; }
+        if ($tpl_group < 0) { $tpl_group = 0; }
+
         if (!empty($template->fields['taskcategories_id'])) {
             $input['taskcategories_id'] = (int)$template->fields['taskcategories_id'];
         }
-        if (!empty($template->fields['users_id_tech'])) {
-            $input['users_id_tech'] = (int)$template->fields['users_id_tech'];
+        if ($tpl_user > 0) {
+            $input['users_id_tech'] = $tpl_user;
         }
-        if (!empty($template->fields['groups_id_tech'])) {
-            $input['groups_id_tech'] = (int)$template->fields['groups_id_tech'];
+        if ($tpl_group > 0) {
+            $input['groups_id_tech'] = $tpl_group;
         }
 
         // IMPORTANT: swap the ticket's ASSIGN actors BEFORE creating the task,
         // so GLPI's "new task" notification (sent inside TicketTask::add())
         // goes to the new step's team, not the previous one.
-        if (!empty($template->fields['users_id_tech']) || !empty($template->fields['groups_id_tech'])) {
-            self::swapAssignActors(
-                $tickets_id,
-                (int)($template->fields['users_id_tech']  ?? 0),
-                (int)($template->fields['groups_id_tech'] ?? 0)
-            );
+        if ($tpl_user > 0 || $tpl_group > 0) {
+            self::swapAssignActors($tickets_id, $tpl_user, $tpl_group);
         }
 
         $task        = new \TicketTask();
@@ -208,6 +214,15 @@ class Workflow extends CommonDBTM
             ],
             ['tickettasks_id' => $new_task_id]
         );
+
+        // Signal the browser that a workflow advance just happened. The JS
+        // (public/js/workflow-refresh.js) listens for this header on any XHR
+        // response and triggers a page reload — that way the auto-refresh
+        // only fires for real workflow advances, never for answer/followup
+        // edits or other timeline traffic.
+        if (!headers_sent()) {
+            header('X-TM-Workflow-Advanced: 1');
+        }
 
         return true;
     }

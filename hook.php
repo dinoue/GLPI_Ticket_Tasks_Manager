@@ -388,6 +388,9 @@ function plugin_tasksmanager_item_update(TicketTask $item): void
                     0,
                     $completion_group
                 );
+                if (!headers_sent()) {
+                    header('X-TM-Workflow-Advanced: 1');
+                }
             }
         }
         return;
