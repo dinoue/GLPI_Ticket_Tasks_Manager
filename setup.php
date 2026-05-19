@@ -10,7 +10,7 @@ use Glpi\Plugin\Hooks;
 use GlpiPlugin\Tasksmanager\TaskDashboard;
 use GlpiPlugin\Tasksmanager\Workflow;
 
-define('PLUGIN_TASKSMANAGER_VERSION', '1.3.11');
+define('PLUGIN_TASKSMANAGER_VERSION', '1.3.12');
 define('PLUGIN_TASKSMANAGER_MIN_GLPI_VERSION', '11.0.0');
 define('PLUGIN_TASKSMANAGER_MAX_GLPI_VERSION', '11.0.99');
 
@@ -44,6 +44,7 @@ function plugin_init_tasksmanager(): void
     // Auto-refresh page when a ticket task is marked as Done so the workflow
     // tab and group assignment are always in sync with the server state.
     $PLUGIN_HOOKS[Hooks::ADD_JAVASCRIPT]['tasksmanager'] = ['public/js/workflow-refresh.js'];
+    $PLUGIN_HOOKS[Hooks::ADD_CSS]['tasksmanager']        = ['public/css/tasksmanager.css'];
 
     // Workflow field in form destinations.
     // Wrapped defensively: during early boot (Plugin::getPluginInformation)

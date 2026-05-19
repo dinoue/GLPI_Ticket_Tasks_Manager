@@ -21,6 +21,19 @@
 .badge.bg-tasksmanager-review      { background-color: #fd7e14 !important; color: #fff; }
 .badge.bg-tasksmanager-done        { background-color: #198754 !important; color: #fff; }
 
+/* GLPI 11 / Tabler resets --tblr-badge-color from .badge — force white text
+   for the colored status badges in the workflow panel and task board so they
+   stay readable on the dark coloured backgrounds. */
+.tasksmanager-workflow-panel .badge.bg-success,
+.tasksmanager-workflow-panel .badge.bg-primary,
+.tasksmanager-workflow-panel .badge.bg-secondary,
+.tasksmanager-workflow-panel .badge.bg-danger,
+.tasksmanager-workflow-panel .badge.bg-warning,
+.tasksmanager-board .badge {
+    --tblr-badge-color: #fff;
+    color: #fff !important;
+}
+
 /* Progress bar inside table */
 .tasksmanager-board .progress {
     height: 20px;

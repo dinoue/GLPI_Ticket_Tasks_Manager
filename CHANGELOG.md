@@ -3,6 +3,14 @@
 All notable changes to **Tasks Manager** are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.3.12] — 2026-05-15
+
+### Fixed
+- Workflow tab status badges (Done / In progress / Pending) now render with
+  white text even on GLPI 11 themes that set `--tblr-badge-color` to a dark
+  colour. The plugin's CSS is now registered via `ADD_CSS` (it wasn't being
+  loaded at all before) and contains a scoped override.
+
 ## [1.3.11] — 2026-05-15
 
 ### Fixed

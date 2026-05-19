@@ -61,7 +61,7 @@ class TaskDashboard extends CommonGLPI
             'LIMIT' => 1,
         ]);
 
-        echo '<div class="p-3">';
+        echo '<div class="p-3 tasksmanager-workflow-panel">';
 
         if (count($tw_iter) > 0) {
             $tw = $tw_iter->current();
