@@ -4,7 +4,7 @@
    <key>tasksmanager</key>
    <state>stable</state>
 
-   <logo>https://raw.githubusercontent.com/cbernard/tasksmanager/main/logo.svg</logo>
+   <logo>https://raw.githubusercontent.com/bacus99/GLPI_Ticket_Tasks_Manager/master/logo.svg</logo>
 
    <description>
       <short>
@@ -35,10 +35,10 @@ Tasks Manager ajoute un moteur de flux de travail aux tickets GLPI.<br /><br />
       </long>
    </description>
 
-   <homepage>https://github.com/cbernard/tasksmanager</homepage>
-   <download>https://github.com/cbernard/tasksmanager/releases</download>
-   <issues>https://github.com/cbernard/tasksmanager/issues</issues>
-   <readme>https://github.com/cbernard/tasksmanager/blob/main/README.md</readme>
+   <homepage>https://github.com/bacus99/GLPI_Ticket_Tasks_Manager</homepage>
+   <download>https://github.com/bacus99/GLPI_Ticket_Tasks_Manager/releases</download>
+   <issues>https://github.com/bacus99/GLPI_Ticket_Tasks_Manager/issues</issues>
+   <readme>https://github.com/bacus99/GLPI_Ticket_Tasks_Manager/blob/master/README.md</readme>
 
    <authors>
       <author>Christian Bernard</author>
@@ -48,7 +48,7 @@ Tasks Manager ajoute un moteur de flux de travail aux tickets GLPI.<br /><br />
       <version>
          <num>1.3.12</num>
          <compatibility>~11.0.0</compatibility>
-         <download_url>https://github.com/cbernard/tasksmanager/releases/download/1.3.12/glpi-tasksmanager-1.3.12.tar.bz2</download_url>
+         <download_url>https://github.com/bacus99/GLPI_Ticket_Tasks_Manager/releases/download/1.3.12/glpi-tasksmanager-1.3.12.tar.bz2</download_url>
       </version>
    </versions>
 
@@ -80,7 +80,7 @@ Tasks Manager ajoute un moteur de flux de travail aux tickets GLPI.<br /><br />
 
    <screenshots>
       <!-- Add real screenshots here once captured, e.g.: -->
-      <!-- <screenshot>https://raw.githubusercontent.com/cbernard/tasksmanager/main/screenshots/workflow-tab.png</screenshot> -->
-      <!-- <screenshot>https://raw.githubusercontent.com/cbernard/tasksmanager/main/screenshots/workflow-editor.png</screenshot> -->
+      <!-- <screenshot>https://raw.githubusercontent.com/bacus99/GLPI_Ticket_Tasks_Manager/main/screenshots/workflow-tab.png</screenshot> -->
+      <!-- <screenshot>https://raw.githubusercontent.com/bacus99/GLPI_Ticket_Tasks_Manager/main/screenshots/workflow-editor.png</screenshot> -->
    </screenshots>
 </root>

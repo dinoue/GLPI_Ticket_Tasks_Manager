@@ -25,7 +25,7 @@ Adds a **workflow engine** to GLPI tickets: define ordered sequences of task tem
 
 ## Installation
 
-1. Download the latest release tarball from the [Releases page](https://github.com/cbernard/tasksmanager/releases) and extract it into `glpi/plugins/tasksmanager/` — or clone this repository there directly.
+1. Download the latest release tarball from the [Releases page](https://github.com/bacus99/GLPI_Ticket_Tasks_Manager/releases) and extract it into `glpi/plugins/tasksmanager/` — or clone this repository there directly.
 2. In GLPI, go to **Setup → Plugins**.
 3. Find **Tasks Manager** in the list, click **Install**, then **Enable**.
 4. Create your workflows under **Tools → Workflows** (build them from existing GLPI Task Templates).
@@ -74,7 +74,7 @@ tasksmanager/
 
 ```powershell
 .\build.ps1                     # uses version from setup.php
-.\build.ps1 -Version 1.3.2      # or override
+.\build.ps1 -Version 1.3.12      # or override
 ```
 
 Produces `dist/glpi-tasksmanager-<VERSION>.tar.bz2`, excluding everything
@@ -86,13 +86,13 @@ listed in `.glpiignore` (git metadata, build artifacts, IDE files, etc.).
    ```powershell
    Invoke-WebRequest https://www.gnu.org/licenses/gpl-3.0.txt -OutFile LICENSE
    ```
-2. **Push to GitHub** under `github.com/cbernard/tasksmanager` (must be public).
+2. **Push to GitHub** under `github.com/bacus99/GLPI_Ticket_Tasks_Manager` (must be public).
 3. **Tag and release** the build:
    ```bash
-   git tag -a 1.3.2 -m "Release 1.3.2"
+   git tag -a 1.3.12 -m "Release 1.3.12"
    git push --tags
-   gh release create 1.3.2 dist/glpi-tasksmanager-1.3.2.tar.bz2 \
-       --title "1.3.2" --notes-from-tag
+   gh release create 1.3.12 dist/glpi-tasksmanager-1.3.12.tar.bz2 \
+       --title "1.3.12" --notes-from-tag
    ```
 4. **Verify** that the URLs in `plugin.xml` all resolve (logo, homepage,
    issues, readme, and most importantly the `download_url`).
