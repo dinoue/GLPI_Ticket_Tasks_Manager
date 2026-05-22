@@ -85,6 +85,7 @@ function plugin_tasksmanager_install(): bool
             `name`                  VARCHAR(255) NOT NULL,
             `description`           TEXT         NULL,
             `is_active`             TINYINT      NOT NULL DEFAULT 1,
+            `assign_ticket_to_task` TINYINT      NOT NULL DEFAULT 1,
             `groups_id_completion`  INT UNSIGNED NOT NULL DEFAULT 0,
             `date_creation`         TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
             `date_mod`              TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -100,6 +101,11 @@ function plugin_tasksmanager_install(): bool
                 ADD `groups_id_completion` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `is_active`,
                 ADD KEY `groups_id_completion` (`groups_id_completion`)");
         }
+        // Upgrade: add assign_ticket_to_task if missing
+        if (!$DB->fieldExists('glpi_plugin_tasksmanager_workflows', 'assign_ticket_to_task')) {
+            $DB->doQuery("ALTER TABLE `glpi_plugin_tasksmanager_workflows`
+                ADD `assign_ticket_to_task` TINYINT NOT NULL DEFAULT 1 AFTER `is_active`");
+        }
     }
 
     // -------------------------------------------------------
@@ -112,11 +118,17 @@ function plugin_tasksmanager_install(): bool
             `workflows_id`     INT UNSIGNED NOT NULL DEFAULT 0,
             `tasktemplates_id` INT UNSIGNED NOT NULL DEFAULT 0,
             `step_order`       INT UNSIGNED NOT NULL DEFAULT 0,
+            `description`      TEXT         NULL,
             `date_creation`    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (`id`),
             KEY `workflows_id`  (`workflows_id`),
             KEY `step_and_order` (`workflows_id`, `step_order`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;");
+    } else {
+        if (!$DB->fieldExists('glpi_plugin_tasksmanager_workflow_steps', 'description')) {
+            $DB->doQuery("ALTER TABLE `glpi_plugin_tasksmanager_workflow_steps`
+                ADD `description` TEXT NULL AFTER `step_order`");
+        }
     }
 
     // -------------------------------------------------------
@@ -144,6 +156,31 @@ function plugin_tasksmanager_install(): bool
     // Holds a desired workflow for a ticket that is awaiting approval.
     // Consumed and deleted once the approval is granted.
     // -------------------------------------------------------
+    // -------------------------------------------------------
+    // Table: glpi_plugin_tasksmanager_workflow_events
+    // Audit log: every advance / complete / apply / remove with who, when,
+    // and a JSON details payload (from/to step, group changes, etc.)
+    // -------------------------------------------------------
+    if (!$DB->tableExists('glpi_plugin_tasksmanager_workflow_events')) {
+        $DB->doQuery("CREATE TABLE `glpi_plugin_tasksmanager_workflow_events` (
+            `id`                  INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            `tickets_id`          INT UNSIGNED NOT NULL DEFAULT 0,
+            `workflows_id`        INT UNSIGNED NOT NULL DEFAULT 0,
+            `ticket_workflows_id` INT UNSIGNED NOT NULL DEFAULT 0,
+            `step_order`          INT UNSIGNED NULL DEFAULT NULL,
+            `event_type`          VARCHAR(40)  NOT NULL,
+            `users_id`            INT UNSIGNED NOT NULL DEFAULT 0,
+            `details`             TEXT         NULL,
+            `date_creation`       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`),
+            KEY `tickets_id`          (`tickets_id`),
+            KEY `workflows_id`        (`workflows_id`),
+            KEY `ticket_workflows_id` (`ticket_workflows_id`),
+            KEY `event_type`          (`event_type`),
+            KEY `date_creation`       (`date_creation`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;");
+    }
+
     if (!$DB->tableExists('glpi_plugin_tasksmanager_pending_workflows')) {
         $DB->doQuery("CREATE TABLE `glpi_plugin_tasksmanager_pending_workflows` (
             `id`            INT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -161,6 +198,9 @@ function plugin_tasksmanager_install(): bool
         mkdir($plugin_doc_dir, 0755, true);
     }
 
+    // Register plugin rights and grant them to super-admin
+    \GlpiPlugin\Tasksmanager\Profile::install();
+
     return true;
 }
 
@@ -174,6 +214,7 @@ function plugin_tasksmanager_uninstall(): bool
     global $DB;
 
     $tables = [
+        'glpi_plugin_tasksmanager_workflow_events',
         'glpi_plugin_tasksmanager_pending_workflows',
         'glpi_plugin_tasksmanager_ticket_workflows',
         'glpi_plugin_tasksmanager_workflow_steps',
@@ -192,6 +233,9 @@ function plugin_tasksmanager_uninstall(): bool
     if (is_dir($plugin_doc_dir)) {
         Toolbox::deleteDir($plugin_doc_dir);
     }
+
+    // Drop plugin rights from every profile
+    \GlpiPlugin\Tasksmanager\Profile::uninstall();
 
     return true;
 }
@@ -303,6 +347,13 @@ function plugin_tasksmanager_item_update(TicketTask $item): void
 {
     global $DB;
 
+    // Skip auto-advance when an admin action (Skip / Restart) is in progress
+    // — that action marks the task Done itself and drives the advance, so
+    // letting this hook also advance produces a duplicate step.
+    if (\GlpiPlugin\Tasksmanager\Workflow::$suppressAutoAdvance) {
+        return;
+    }
+
     // Only act when state is explicitly being set to 2 in this specific update.
     // Do NOT fall back to $item->fields['state']: that would fire again on a
     // ticket Save that re-submits the task when it is already done.
@@ -374,6 +425,7 @@ function plugin_tasksmanager_item_update(TicketTask $item): void
             ['id' => $ticket_workflows_id]
         );
 
+        $completion_group = 0;
         $wf_iter = $DB->request([
             'FROM'  => 'glpi_plugin_tasksmanager_workflows',
             'WHERE' => ['id' => $workflows_id],
@@ -393,6 +445,15 @@ function plugin_tasksmanager_item_update(TicketTask $item): void
                 }
             }
         }
+
+        \GlpiPlugin\Tasksmanager\Workflow::logEvent(
+            'workflow_completed',
+            $tickets_id,
+            $workflows_id,
+            $ticket_workflows_id,
+            $current_step_order,
+            ['completion_group' => $completion_group]
+        );
         return;
     }
 

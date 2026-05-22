@@ -1,5 +1,5 @@
 {
-    "name": "bacus99/glpi-ticket-tasks-manager",
+    "name": "bacus99/glpi-tasksmanager",
     "description": "GLPI 11 plugin: workflow engine for ticket tasks based on ordered task templates.",
     "type": "glpi-plugin",
     "license": "GPL-3.0-or-later",

@@ -13,13 +13,13 @@ if (!$plugin->isInstalled('tasksmanager') || !$plugin->isActivated('tasksmanager
     Html::displayNotFoundError();
 }
 
-Session::checkRight('config', READ);
+Session::checkRight('plugin_tasksmanager_workflows', READ);
 
 global $DB;
 
 // Handle delete
 if (isset($_POST['delete']) && isset($_POST['id'])) {
-    Session::checkRight('config', UPDATE);
+    Session::checkRight('plugin_tasksmanager_workflows', UPDATE);
 
     $id = (int)$_POST['id'];
     $DB->delete('glpi_plugin_tasksmanager_workflow_steps',   ['workflows_id' => $id]);
@@ -28,6 +28,30 @@ if (isset($_POST['delete']) && isset($_POST['id'])) {
 
     Session::addMessageAfterRedirect(__('Workflow deleted.', 'tasksmanager'), true, INFO);
     Html::redirect($_SERVER['PHP_SELF']);
+}
+
+// Handle clone — duplicate workflow + all its steps as a new "(copy)" record
+if (isset($_POST['clone']) && isset($_POST['id'])) {
+    Session::checkRight('plugin_tasksmanager_workflows', UPDATE);
+
+    $src_id = (int)$_POST['id'];
+    $new_id = Workflow::duplicate($src_id);
+
+    if ($new_id > 0) {
+        Session::addMessageAfterRedirect(
+            __('Workflow duplicated.', 'tasksmanager'),
+            true,
+            INFO
+        );
+        Html::redirect('workflow.form.php?id=' . $new_id);
+    } else {
+        Session::addMessageAfterRedirect(
+            __('Failed to duplicate workflow.', 'tasksmanager'),
+            true,
+            ERROR
+        );
+        Html::redirect($_SERVER['PHP_SELF']);
+    }
 }
 
 Html::header(
@@ -42,7 +66,7 @@ $workflows = $DB->request([
     'ORDER' => ['name ASC'],
 ]);
 
-$can_edit = Session::haveRight('config', UPDATE);
+$can_edit = Session::haveRight('plugin_tasksmanager_workflows', UPDATE);
 
 echo '<div class="container-fluid mt-3">';
 echo '<div class="d-flex justify-content-between align-items-center mb-3">';
@@ -86,14 +110,27 @@ foreach ($workflows as $wf) {
     echo '</td>';
     echo '<td class="text-end">';
     if ($can_edit) {
-        echo '<a href="workflow.form.php?id=' . (int)$wf['id'] . '" class="btn btn-sm btn-outline-primary me-1">';
+        echo '<a href="workflow.form.php?id=' . (int)$wf['id'] . '" class="btn btn-sm btn-outline-primary me-1"'
+            . ' title="' . __('Edit') . '">';
         echo '<i class="ti ti-edit"></i></a>';
 
+        // Clone
+        echo '<form method="post" class="d-inline me-1"'
+            . ' onsubmit="return confirm(\'' . addslashes(__('Duplicate this workflow?', 'tasksmanager')) . '\')">';
+        echo '<input type="hidden" name="_glpi_csrf_token" class="glpi-csrf-token" value="">';
+        echo '<input type="hidden" name="id" value="' . (int)$wf['id'] . '">';
+        echo '<button type="submit" name="clone" class="btn btn-sm btn-outline-secondary"'
+            . ' title="' . __('Duplicate', 'tasksmanager') . '">';
+        echo '<i class="ti ti-copy"></i></button>';
+        echo '</form>';
+
+        // Delete
         echo '<form method="post" class="d-inline"'
             . ' onsubmit="return confirm(\'' . addslashes(__('Delete this workflow?', 'tasksmanager')) . '\')">';
         echo '<input type="hidden" name="_glpi_csrf_token" class="glpi-csrf-token" value="">';
         echo '<input type="hidden" name="id" value="' . (int)$wf['id'] . '">';
-        echo '<button type="submit" name="delete" class="btn btn-sm btn-outline-danger">';
+        echo '<button type="submit" name="delete" class="btn btn-sm btn-outline-danger"'
+            . ' title="' . __('Delete') . '">';
         echo '<i class="ti ti-trash"></i></button>';
         echo '</form>';
     }

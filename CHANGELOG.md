@@ -3,6 +3,134 @@
 All notable changes to **Tasks Manager** are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] — 2026-05-15
+
+### Added
+- **Skip / Restart current step (admin actions).** Two new buttons on the
+  ticket's Workflow tab let an admin force-advance past a stuck step
+  ("Skip step") or re-create the current step's task ("Restart step").
+  Both mark any lingering TicketTask as Done first, then either advance
+  `current_step` (and create the next step's task) or re-instantiate the
+  current step. New audit events: `step_skipped`, `step_restarted`.
+  New AJAX actions: `skip_current_step`, `restart_current_step`. Requires
+  `plugin_tasksmanager_workflows : UPDATE`.
+
+- **Visual workflow builder (vertical flowchart).** The workflow editor's
+  step list is now a vertical card-based flowchart with chevron connectors
+  between steps and a drag handle on each card. Drag-reorder uses
+  **SortableJS** (bundled in GLPI 11 at `public/lib/sortablejs.js`),
+  replacing the up/down arrow buttons. The legacy table layout is gone.
+  Each step card shows the number badge, the clickable task-template name,
+  and the expandable template-comment editor.
+
+### Changed
+- Removed `tmMoveStep` JS helper (replaced by SortableJS).
+- CSS additions for `.tm-flow*` classes scoped to the builder.
+
+## [1.3.19] — 2026-05-15
+
+### Changed
+- **AJAX response contract aligned with `GLPI-Shared/rules/glpi-plugin-api.md`.**
+  All plugin endpoints (`ajax/workflow.php`, `ajax/taskstate.php`) now return
+  `{ ok: bool, error?: string, data?: object }` instead of the previous
+  `{ success: bool, message: string }`. Error responses additionally use
+  proper HTTP status codes (400 missing/invalid input, 403 forbidden,
+  404 not found, 500 server error) so transport-level tooling can react
+  appropriately. JS callers in `src/TaskDashboard.php`,
+  `front/workflow.form.php`, and `public/js/tasksmanager.js` updated to
+  read the new shape.
+- Composer package name corrected to `bacus99/glpi-tasksmanager` (matching
+  the shared `bacus99/glpi-<plugin-slug>` convention).
+- `CLAUDE.md` updated to reflect the corrected composer name and document
+  the intentional reliance on `CheckCsrfListener` (no explicit
+  `Session::validateCSRF` calls in AJAX endpoints).
+- `.glpiignore` now excludes `CLAUDE.md` so the dev guide isn't shipped
+  in release tarballs.
+
+## [1.3.18] — 2026-05-15
+
+### Added
+- **Tasks Manager rights tab on GLPI Profiles**
+  (Administration → Profiles → *profile* → **Tasks Manager**). Lets admins
+  grant per-profile rights instead of relying on the catch-all `config`
+  right. New right: `plugin_tasksmanager_workflows` with granular
+  Read / Update / Create / Delete / Purge permissions, rendered via
+  GLPI's native `displayRightsChoiceMatrix`.
+- Install/upgrade automatically declares the right and grants full
+  permissions to the super-admin profile (id 4) so the installer can
+  use the plugin out of the box.
+- Uninstall removes the right from every profile.
+
+### Changed
+- All workflow-management permission checks (workflow list / form /
+  AJAX endpoints / TaskDashboard "Create a workflow" link) switched
+  from `Session::checkRight('config', …)` to
+  `Session::checkRight('plugin_tasksmanager_workflows', …)`.
+
+## [1.3.17] — 2026-05-15
+
+### Changed
+- The "description" textarea on each workflow step is now bound to the
+  **task template's `comment` field**, not a per-step value. Editing it
+  updates `glpi_tasktemplates.comment` via `TaskTemplate->update()` and
+  applies to every workflow that uses the same template. New AJAX action:
+  `update_template_comment`. The textarea label is now "Add / Edit
+  template comment" with a small hint about its scope.
+- `Workflow::applyStep` no longer overrides the new task's content with
+  the step's description — task content always comes from the template's
+  `content` field, so behavior matches GLPI's own task-template flow.
+
+### Notes
+- The `glpi_plugin_tasksmanager_workflow_steps.description` column added
+  in 1.3.15 is now unused but left in place to keep the upgrade idempotent.
+
+## [1.3.16] — 2026-05-15
+
+### Added
+- Task-template name in the workflow editor steps table is now a clickable
+  link that opens the GLPI task template's edit form in a new tab. Saves a
+  context-switch when reviewing what each step actually does.
+
+## [1.3.15] — 2026-05-15
+
+### Added
+- **Per-step description.** Each workflow step now has an optional
+  description field (rich text, stored as TEXT on
+  `glpi_plugin_tasksmanager_workflow_steps.description`). When set, it
+  overrides the task template's body when the step instantiates — so you
+  can reuse a single task template across workflows and supply
+  step-specific runbook instructions per workflow. Idempotent upgrade
+  migration adds the column to existing installs.
+- Inline expand/collapse description editor on the workflow form, saved
+  via XHR on blur. New AJAX action: `update_step_description`.
+
+### Changed
+- Plugin's workflow panel now overrides `--tblr-secondary` to `#d6dee8`
+  (lighter blue-gray for the "Pending" badge) and `--tblr-success` to
+  `#57f06f` (brighter green for the "Done" badge). Scoped to
+  `.tasksmanager-workflow-panel` so global GLPI badges are unaffected.
+
+## [1.3.14] — 2026-05-15
+
+### Added
+- **Clone workflow.** A "Duplicate" button on the workflow list page (next to
+  Edit and Delete) creates a copy of the workflow's metadata and all its
+  steps under a new "(copy)" name, then opens the new workflow's editor.
+- **Audit log.** Every workflow event (apply, step start, complete, remove)
+  is now recorded with the user, timestamp, and JSON details payload. A new
+  "History" card on the Workflow tab shows the last 12 events for the
+  ticket. New table `glpi_plugin_tasksmanager_workflow_events` (created on
+  install/upgrade).
+
+## [1.3.13] — 2026-05-15
+
+### Added
+- Per-workflow checkbox **"Assign the ticket to each step's task team"**
+  (default on, backward-compatible). When unchecked, advancing the workflow
+  only sets the new task's tech/group from the template — the ticket's own
+  assignment is left untouched. Adds `assign_ticket_to_task` to
+  `glpi_plugin_tasksmanager_workflows` with an idempotent upgrade migration.
+
 ## [1.3.12] — 2026-05-15
 
 ### Fixed

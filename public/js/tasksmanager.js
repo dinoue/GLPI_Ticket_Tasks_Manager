@@ -29,10 +29,10 @@
             if (typeof progress !== 'undefined') data.progress = progress;
 
             TasksManager._post(url, data, function (resp) {
-                if (resp.success) {
+                if (resp.ok) {
                     location.reload();
                 } else {
-                    glpi_alert({ title: 'Tasks Manager', message: resp.message || 'Update failed' });
+                    glpi_alert({ title: 'Tasks Manager', message: resp.error || 'Update failed' });
                 }
             });
         },
@@ -56,10 +56,10 @@
                 tickets_id:  ticketsId,
                 workflows_id: workflowId,
             }, function (resp) {
-                if (resp.success) {
+                if (resp.ok) {
                     location.reload();
                 } else {
-                    glpi_alert({ title: 'Tasks Manager', message: resp.message || 'Failed to apply workflow' });
+                    glpi_alert({ title: 'Tasks Manager', message: resp.error || 'Failed to apply workflow' });
                 }
             });
         },
@@ -76,10 +76,10 @@
                 action:     'remove_from_ticket',
                 tickets_id: ticketsId,
             }, function (resp) {
-                if (resp.success) {
+                if (resp.ok) {
                     location.reload();
                 } else {
-                    glpi_alert({ title: 'Tasks Manager', message: resp.message || 'Failed to remove workflow' });
+                    glpi_alert({ title: 'Tasks Manager', message: resp.error || 'Failed to remove workflow' });
                 }
             });
         },

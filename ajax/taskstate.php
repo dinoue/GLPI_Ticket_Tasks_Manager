@@ -2,6 +2,9 @@
 
 /**
  * Tasks Manager - AJAX handler for task state updates
+ *
+ * Response contract (per GLPI-Shared/rules/glpi-plugin-api.md):
+ *   { ok: bool, error?: string, data?: object }
  */
 
 use GlpiPlugin\Tasksmanager\TaskState;
@@ -12,7 +15,7 @@ include('../../../inc/includes.php');
 Session::checkLoginUser();
 Session::checkRight('ticket', UPDATE);
 
-header('Content-Type: application/json');
+header('Content-Type: application/json; charset=utf-8');
 
 $action = $_POST['action'] ?? $_GET['action'] ?? '';
 
@@ -24,7 +27,9 @@ try {
             $id = (int)($_POST['id'] ?? 0);
 
             if (!$taskstate->getFromDB($id)) {
-                throw new \RuntimeException('Task state not found');
+                http_response_code(404);
+                echo json_encode(['ok' => false, 'error' => 'Task state not found']);
+                exit;
             }
 
             $taskstate->check($id, UPDATE);
@@ -34,28 +39,32 @@ try {
                 'progress'      => $_POST['progress'] ?? $taskstate->fields['progress'],
             ]);
 
-            echo json_encode([
-                'success' => (bool)$result,
-                'message' => $result ? __('Status updated', 'tasksmanager') : __('Update failed', 'tasksmanager'),
-            ]);
+            if (!$result) {
+                http_response_code(500);
+                echo json_encode(['ok' => false, 'error' => __('Update failed', 'tasksmanager')]);
+                exit;
+            }
+
+            echo json_encode(['ok' => true]);
             break;
 
         case 'get_states':
             $tickets_id = (int)($_GET['tickets_id'] ?? 0);
             if ($tickets_id <= 0) {
-                throw new \RuntimeException('Invalid ticket ID');
+                http_response_code(400);
+                echo json_encode(['ok' => false, 'error' => 'Invalid ticket ID']);
+                exit;
             }
             $states = TaskState::getForTicket($tickets_id);
-            echo json_encode(['success' => true, 'data' => $states]);
+            echo json_encode(['ok' => true, 'data' => $states]);
             break;
 
         default:
-            throw new \RuntimeException('Unknown action');
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Unknown action']);
+            exit;
     }
 } catch (\Throwable $e) {
-    http_response_code(400);
-    echo json_encode([
-        'success' => false,
-        'message' => $e->getMessage(),
-    ]);
+    http_response_code(500);
+    echo json_encode(['ok' => false, 'error' => $e->getMessage()]);
 }

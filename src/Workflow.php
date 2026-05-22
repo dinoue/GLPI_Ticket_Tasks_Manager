@@ -15,7 +15,16 @@ use Session;
  */
 class Workflow extends CommonDBTM
 {
-    public static $rightname = 'config';
+    public static $rightname = 'plugin_tasksmanager_workflows';
+
+    /**
+     * Suppress the auto-advance hook for the duration of an admin override
+     * (Skip / Restart). When true, plugin_tasksmanager_item_update() returns
+     * early instead of advancing the workflow on its own — otherwise we'd
+     * double-advance because the admin action also marks the task Done,
+     * which trips the same hook.
+     */
+    public static bool $suppressAutoAdvance = false;
 
     public static function getTypeName($nb = 0): string
     {
@@ -35,7 +44,7 @@ class Workflow extends CommonDBTM
             'icon'  => self::getIcon(),
         ];
 
-        if (Session::haveRight('config', UPDATE)) {
+        if (Session::haveRight(self::$rightname, UPDATE)) {
             $menu['links']['search'] = Plugin::getWebDir('tasksmanager', false) . '/front/workflow.list.php';
             $menu['links']['add']    = Plugin::getWebDir('tasksmanager', false) . '/front/workflow.form.php';
         }
@@ -143,6 +152,15 @@ class Workflow extends CommonDBTM
             return false;
         }
 
+        self::logEvent(
+            'workflow_applied',
+            $tickets_id,
+            $workflows_id,
+            $ticket_workflows_id,
+            (int)$first_step['step_order'],
+            ['step_id' => (int)$first_step['id']]
+        );
+
         return true;
     }
 
@@ -158,6 +176,10 @@ class Workflow extends CommonDBTM
             return false;
         }
 
+        // The task body comes from the linked task template's `content`.
+        // (The "Add template comment" textarea in the workflow editor is a
+        // shortcut to the template's `comment` field — admin-facing only,
+        // not copied into the resulting task.)
         $content = $template->fields['content'] ?? '';
         if (empty(trim(strip_tags($content)))) {
             $content = $template->fields['name'] ?? __('Task', 'tasksmanager');
@@ -195,7 +217,11 @@ class Workflow extends CommonDBTM
         // IMPORTANT: swap the ticket's ASSIGN actors BEFORE creating the task,
         // so GLPI's "new task" notification (sent inside TicketTask::add())
         // goes to the new step's team, not the previous one.
-        if ($tpl_user > 0 || $tpl_group > 0) {
+        //
+        // Skip when the workflow has `assign_ticket_to_task = 0` — in that
+        // case only the new task gets the template tech/group; the ticket's
+        // own assignment is left untouched.
+        if (($tpl_user > 0 || $tpl_group > 0) && self::shouldAssignTicketToTaskTeam($ticket_workflows_id)) {
             self::swapAssignActors($tickets_id, $tpl_user, $tpl_group);
         }
 
@@ -224,7 +250,336 @@ class Workflow extends CommonDBTM
             header('X-TM-Workflow-Advanced: 1');
         }
 
+        // Audit log
+        // Look up the parent workflow id for context.
+        $tw_lookup = $DB->request([
+            'SELECT' => ['workflows_id'],
+            'FROM'   => 'glpi_plugin_tasksmanager_ticket_workflows',
+            'WHERE'  => ['id' => $ticket_workflows_id],
+            'LIMIT'  => 1,
+        ]);
+        $wf_id_for_log = (count($tw_lookup) > 0) ? (int)$tw_lookup->current()['workflows_id'] : 0;
+
+        self::logEvent(
+            'step_started',
+            $tickets_id,
+            $wf_id_for_log,
+            $ticket_workflows_id,
+            (int)$step['step_order'],
+            [
+                'tickettasks_id'    => $new_task_id,
+                'tasktemplates_id'  => (int)$step['tasktemplates_id'],
+                'users_id_tech'     => $tpl_user,
+                'groups_id_tech'    => $tpl_group,
+            ]
+        );
+
         return true;
+    }
+
+    /**
+     * Record an audit-log entry. Safe to call when the table is missing
+     * (pre-1.3.14 installs that haven't run the upgrade yet) — just silently
+     * skips the insert.
+     *
+     * Common event types:
+     *   workflow_applied   — initial application of a workflow to a ticket
+     *   step_started      — the next step's task was created
+     *   workflow_completed — final step done; workflow marked completed
+     *   workflow_removed   — user removed an in-flight workflow from the ticket
+     */
+    public static function logEvent(
+        string $event_type,
+        int $tickets_id,
+        int $workflows_id = 0,
+        int $ticket_workflows_id = 0,
+        ?int $step_order = null,
+        array $details = []
+    ): void {
+        global $DB;
+
+        if (!$DB->tableExists('glpi_plugin_tasksmanager_workflow_events')) {
+            return;
+        }
+
+        $DB->insert('glpi_plugin_tasksmanager_workflow_events', [
+            'tickets_id'          => $tickets_id,
+            'workflows_id'        => $workflows_id,
+            'ticket_workflows_id' => $ticket_workflows_id,
+            'step_order'          => $step_order,
+            'event_type'          => $event_type,
+            'users_id'            => (int)(\Session::getLoginUserID(false) ?: 0),
+            'details'             => $details ? json_encode($details) : null,
+            'date_creation'       => date('Y-m-d H:i:s'),
+        ]);
+    }
+
+    /**
+     * Force-advance a workflow past its current step (admin override).
+     *
+     * Marks any in-progress task at the current step as Done (so it disappears
+     * from the user's queue), then either:
+     *   - creates the next step's task and updates current_step, or
+     *   - marks the workflow `completed` if there's no next step.
+     *
+     * Returns true on success, false when the workflow isn't active or the
+     * advance fails.
+     */
+    public static function skipCurrentStep(int $ticket_workflows_id): bool
+    {
+        global $DB;
+
+        $tw = self::loadActiveTicketWorkflow($ticket_workflows_id);
+        if ($tw === null) {
+            return false;
+        }
+        $tickets_id         = (int)$tw['tickets_id'];
+        $workflows_id       = (int)$tw['workflows_id'];
+        $current_step_order = (int)$tw['current_step'];
+
+        // Suppress the auto-advance hook for the duration of this method —
+        // markCurrentTaskDone() below sets state=2 on the TicketTask, which
+        // would otherwise trigger plugin_tasksmanager_item_update() and
+        // double-advance the workflow.
+        self::$suppressAutoAdvance = true;
+        try {
+            self::markCurrentTaskDone($tickets_id, $ticket_workflows_id, $current_step_order);
+
+            // Find the next step
+            $next_iter = $DB->request([
+                'FROM'  => 'glpi_plugin_tasksmanager_workflow_steps',
+                'WHERE' => [
+                    'workflows_id' => $workflows_id,
+                    'step_order'   => ['>', $current_step_order],
+                ],
+                'ORDER' => ['step_order ASC'],
+                'LIMIT' => 1,
+            ]);
+
+            if (count($next_iter) === 0) {
+                // No next step — complete the workflow.
+                $DB->update(
+                    'glpi_plugin_tasksmanager_ticket_workflows',
+                    ['status' => 'completed'],
+                    ['id' => $ticket_workflows_id]
+                );
+                self::logEvent(
+                    'step_skipped',
+                    $tickets_id,
+                    $workflows_id,
+                    $ticket_workflows_id,
+                    $current_step_order,
+                    ['outcome' => 'workflow_completed']
+                );
+                return true;
+            }
+
+            $next_step = $next_iter->current();
+            if (!self::applyStep($tickets_id, $next_step, $ticket_workflows_id)) {
+                return false;
+            }
+            $DB->update(
+                'glpi_plugin_tasksmanager_ticket_workflows',
+                ['current_step' => (int)$next_step['step_order']],
+                ['id' => $ticket_workflows_id]
+            );
+
+            self::logEvent(
+                'step_skipped',
+                $tickets_id,
+                $workflows_id,
+                $ticket_workflows_id,
+                $current_step_order,
+                ['advanced_to' => (int)$next_step['step_order']]
+            );
+
+            return true;
+        } finally {
+            self::$suppressAutoAdvance = false;
+        }
+    }
+
+    /**
+     * Re-instantiate the current step's task (admin override).
+     *
+     * Useful when the existing task was lost, deleted, or assigned to the wrong
+     * person. The current TicketTask is marked Done (so it doesn't show twice)
+     * and a fresh copy is created with the template's tech/group. current_step
+     * stays the same.
+     */
+    public static function restartCurrentStep(int $ticket_workflows_id): bool
+    {
+        global $DB;
+
+        $tw = self::loadActiveTicketWorkflow($ticket_workflows_id);
+        if ($tw === null) {
+            return false;
+        }
+        $tickets_id         = (int)$tw['tickets_id'];
+        $workflows_id       = (int)$tw['workflows_id'];
+        $current_step_order = (int)$tw['current_step'];
+
+        // Look up the current step's row
+        $step_iter = $DB->request([
+            'FROM'  => 'glpi_plugin_tasksmanager_workflow_steps',
+            'WHERE' => [
+                'workflows_id' => $workflows_id,
+                'step_order'   => $current_step_order,
+            ],
+            'LIMIT' => 1,
+        ]);
+        if (count($step_iter) === 0) {
+            return false;
+        }
+        $step = $step_iter->current();
+
+        // Suppress the auto-advance hook — same reason as skipCurrentStep:
+        // markCurrentTaskDone() trips item_update which would advance the
+        // workflow before we can re-instantiate at the same step.
+        self::$suppressAutoAdvance = true;
+        try {
+            self::markCurrentTaskDone($tickets_id, $ticket_workflows_id, $current_step_order);
+
+            if (!self::applyStep($tickets_id, $step, $ticket_workflows_id)) {
+                return false;
+            }
+
+            self::logEvent(
+                'step_restarted',
+                $tickets_id,
+                $workflows_id,
+                $ticket_workflows_id,
+                $current_step_order
+            );
+
+            return true;
+        } finally {
+            self::$suppressAutoAdvance = false;
+        }
+    }
+
+    /** Load an active ticket_workflow row by id, or null if not found / not active. */
+    private static function loadActiveTicketWorkflow(int $ticket_workflows_id): ?array
+    {
+        global $DB;
+
+        $iter = $DB->request([
+            'FROM'  => 'glpi_plugin_tasksmanager_ticket_workflows',
+            'WHERE' => ['id' => $ticket_workflows_id, 'status' => 'active'],
+            'LIMIT' => 1,
+        ]);
+        if (count($iter) === 0) {
+            return null;
+        }
+        return $iter->current();
+    }
+
+    /** Mark the workflow-tracked task at the given step as Done. Best-effort. */
+    private static function markCurrentTaskDone(int $tickets_id, int $ticket_workflows_id, int $step_order): void
+    {
+        global $DB;
+
+        $ts = $DB->request([
+            'SELECT' => ['tickettasks_id'],
+            'FROM'   => 'glpi_plugin_tasksmanager_taskstates',
+            'WHERE'  => [
+                'tickets_id'          => $tickets_id,
+                'ticket_workflows_id' => $ticket_workflows_id,
+                'workflow_step_order' => $step_order,
+            ],
+            'LIMIT'  => 1,
+        ]);
+        if (count($ts) === 0) {
+            return;
+        }
+        $tickettasks_id = (int)$ts->current()['tickettasks_id'];
+        if ($tickettasks_id <= 0) {
+            return;
+        }
+        $task = new \TicketTask();
+        if ($task->getFromDB($tickettasks_id) && (int)$task->fields['state'] !== 2) {
+            $task->update(['id' => $tickettasks_id, 'state' => 2]);
+        }
+    }
+
+    /**
+     * Duplicate a workflow (metadata + all steps) and return the new id.
+     * The copy's name has " (copy)" appended; pre-existing in-flight
+     * ticket_workflows are NOT copied — only the definition is duplicated.
+     */
+    public static function duplicate(int $source_workflow_id): int
+    {
+        global $DB;
+
+        $src = $DB->request([
+            'FROM'  => 'glpi_plugin_tasksmanager_workflows',
+            'WHERE' => ['id' => $source_workflow_id],
+            'LIMIT' => 1,
+        ]);
+        if (count($src) === 0) {
+            return 0;
+        }
+        $row = $src->current();
+
+        $DB->insert('glpi_plugin_tasksmanager_workflows', [
+            'name'                  => ($row['name'] ?? 'Workflow') . ' ' . __('(copy)', 'tasksmanager'),
+            'description'           => $row['description'] ?? null,
+            'is_active'             => (int)($row['is_active'] ?? 1),
+            'assign_ticket_to_task' => (int)($row['assign_ticket_to_task'] ?? 1),
+            'groups_id_completion'  => (int)($row['groups_id_completion'] ?? 0),
+            'date_creation'         => date('Y-m-d H:i:s'),
+        ]);
+        $new_id = (int)$DB->insertId();
+        if ($new_id <= 0) {
+            return 0;
+        }
+
+        // Copy steps preserving step_order
+        $steps = $DB->request([
+            'FROM'  => 'glpi_plugin_tasksmanager_workflow_steps',
+            'WHERE' => ['workflows_id' => $source_workflow_id],
+            'ORDER' => ['step_order ASC'],
+        ]);
+        foreach ($steps as $step) {
+            $DB->insert('glpi_plugin_tasksmanager_workflow_steps', [
+                'workflows_id'     => $new_id,
+                'tasktemplates_id' => (int)$step['tasktemplates_id'],
+                'step_order'       => (int)$step['step_order'],
+                'date_creation'    => date('Y-m-d H:i:s'),
+            ]);
+        }
+
+        return $new_id;
+    }
+
+    /**
+     * Return whether the workflow that owns the given ticket_workflow
+     * record wants the ticket reassigned to each step's task team.
+     * Defaults to true if the column is missing or the lookup fails, so
+     * existing behaviour is preserved.
+     */
+    public static function shouldAssignTicketToTaskTeam(int $ticket_workflows_id): bool
+    {
+        global $DB;
+
+        $iter = $DB->request([
+            'SELECT'    => ['wf.assign_ticket_to_task'],
+            'FROM'      => 'glpi_plugin_tasksmanager_ticket_workflows AS tw',
+            'LEFT JOIN' => [
+                'glpi_plugin_tasksmanager_workflows AS wf' => ['ON' => ['tw' => 'workflows_id', 'wf' => 'id']],
+            ],
+            'WHERE'     => ['tw.id' => $ticket_workflows_id],
+            'LIMIT'     => 1,
+        ]);
+        if (count($iter) === 0) {
+            return true;
+        }
+        $row = $iter->current();
+        // Column might not exist on stale schemas — null/missing → default ON.
+        if (!array_key_exists('assign_ticket_to_task', $row) || $row['assign_ticket_to_task'] === null) {
+            return true;
+        }
+        return (int)$row['assign_ticket_to_task'] === 1;
     }
 
     /**

@@ -23,7 +23,13 @@
 
 /* GLPI 11 / Tabler resets --tblr-badge-color from .badge — force white text
    for the colored status badges in the workflow panel and task board so they
-   stay readable on the dark coloured backgrounds. */
+   stay readable on the dark coloured backgrounds. We also override the
+   Tabler secondary + success swatches to a lighter palette matching the
+   plugin's visual identity. */
+.tasksmanager-workflow-panel {
+    --tblr-secondary: #d6dee8;
+    --tblr-success:   #57f06f;
+}
 .tasksmanager-workflow-panel .badge.bg-success,
 .tasksmanager-workflow-panel .badge.bg-primary,
 .tasksmanager-workflow-panel .badge.bg-secondary,
@@ -31,6 +37,14 @@
 .tasksmanager-workflow-panel .badge.bg-warning,
 .tasksmanager-board .badge {
     --tblr-badge-color: #fff;
+    color: #fff !important;
+}
+.tasksmanager-workflow-panel .badge.bg-secondary {
+    background-color: #d6dee8 !important;
+    color: #182433 !important;  /* readable on the light secondary */
+}
+.tasksmanager-workflow-panel .badge.bg-success {
+    background-color: #57f06f !important;
     color: #fff !important;
 }
 
@@ -105,6 +119,106 @@
 #tm-steps-table td,
 #tm-steps-table th {
     color: var(--tblr-body-color, var(--bs-body-color, #182433));
+}
+
+/* ── Workflow editor — vertical flowchart ───────────────────────────────── */
+/* Replaces the legacy table layout. Each step is a card; cards are linked
+   visually by a chevron connector. SortableJS drives drag-reorder via the
+   left grip handle. */
+
+.tm-flow {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+}
+
+.tm-flow-step {
+    position: relative;
+}
+
+.tm-flow-step:last-child .tm-flow-connector {
+    display: none;
+}
+
+.tm-flow-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    background: var(--tblr-bg-surface, #fff);
+    border: 1px solid var(--tblr-border-color, rgba(0,0,0,.125));
+    border-radius: 0.5rem;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04);
+    transition: box-shadow .15s ease, transform .15s ease;
+}
+
+.tm-flow-card:hover {
+    box-shadow: 0 4px 12px rgba(0,0,0,.08);
+}
+
+.tm-flow-handle {
+    cursor: grab;
+    color: #adb5bd;
+    font-size: 1.25rem;
+    user-select: none;
+    flex-shrink: 0;
+    padding-top: 0.15rem;
+}
+
+.tm-flow-handle:active {
+    cursor: grabbing;
+}
+
+.tm-flow-num {
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #2563EB 0%, #1D4ED8 100%);
+    color: #fff;
+    font-weight: 600;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.tm-flow-body {
+    flex-grow: 1;
+    min-width: 0;
+}
+
+.tm-flow-title {
+    font-weight: 500;
+    margin-bottom: 0.25rem;
+}
+
+.tm-flow-actions {
+    flex-shrink: 0;
+}
+
+.tm-flow-connector {
+    text-align: center;
+    color: #adb5bd;
+    font-size: 1.25rem;
+    line-height: 1;
+    padding: 0.25rem 0;
+    user-select: none;
+}
+
+.tm-flow-empty {
+    border: 2px dashed var(--tblr-border-color, rgba(0,0,0,.125));
+    border-radius: 0.5rem;
+}
+
+/* SortableJS visual states */
+.tm-flow-ghost {
+    opacity: 0.4;
+    background-color: #e9ecef;
+}
+
+.tm-flow-drag {
+    box-shadow: 0 8px 24px rgba(0,0,0,.15) !important;
 }
 
 /* ── Global dashboard ───────────────────────────────────────────────────── */

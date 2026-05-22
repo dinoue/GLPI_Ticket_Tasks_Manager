@@ -3,12 +3,23 @@
 /**
  * Tasks Manager - Workflow AJAX endpoint
  *
+ * Response shape (per GLPI-Shared/rules/glpi-plugin-api.md):
+ *   { ok: bool, error?: string, data?: object }
+ *
+ * HTTP status codes:
+ *   200 — success
+ *   400 — missing / invalid input
+ *   403 — not allowed
+ *   404 — referenced item not found
+ *   500 — unexpected server error
+ *
  * Actions (POST):
- *   add_step          – add a task-template step to a workflow
- *   remove_step       – remove a step
- *   reorder_steps     – save new step order (array of step IDs)
- *   apply_to_ticket   – assign a workflow to a ticket and create its first task
- *   remove_from_ticket – cancel the active workflow on a ticket
+ *   add_step                  – add a task-template step to a workflow
+ *   remove_step               – remove a step
+ *   reorder_steps             – save new step order (array of step IDs)
+ *   update_template_comment   – update the linked task template's comment
+ *   apply_to_ticket           – assign a workflow to a ticket and create its first task
+ *   remove_from_ticket        – cancel the active workflow on a ticket
  */
 
 include('../../../inc/includes.php');
@@ -16,13 +27,29 @@ include_once(__DIR__ . '/../hook.php');
 
 use GlpiPlugin\Tasksmanager\Workflow;
 
-header('Content-Type: application/json');
+header('Content-Type: application/json; charset=utf-8');
 
 Session::checkLoginUser();
 
 $plugin = new Plugin();
 if (!$plugin->isInstalled('tasksmanager') || !$plugin->isActivated('tasksmanager')) {
-    echo json_encode(['success' => false, 'message' => 'Plugin not active']);
+    http_response_code(403);
+    echo json_encode(['ok' => false, 'error' => 'Plugin not active']);
+    exit;
+}
+
+/** Helper: respond and exit. */
+function tm_respond(bool $ok, int $http_code = 200, ?string $error = null, array $data = []): void
+{
+    http_response_code($http_code);
+    $out = ['ok' => $ok];
+    if ($error !== null) {
+        $out['error'] = $error;
+    }
+    if (!empty($data)) {
+        $out['data'] = $data;
+    }
+    echo json_encode($out);
     exit;
 }
 
@@ -34,14 +61,13 @@ switch ($action) {
 
     // ── Add a template step ───────────────────────────────────────────────
     case 'add_step':
-        Session::checkRight('config', UPDATE);
+        Session::checkRight('plugin_tasksmanager_workflows', UPDATE);
 
         $workflows_id     = (int)($_POST['workflows_id']     ?? 0);
         $tasktemplates_id = (int)($_POST['tasktemplates_id'] ?? 0);
 
         if (!$workflows_id || !$tasktemplates_id) {
-            echo json_encode(['success' => false, 'message' => 'Missing parameters']);
-            exit;
+            tm_respond(false, 400, 'Missing parameters');
         }
 
         $last = $DB->request([
@@ -60,32 +86,50 @@ switch ($action) {
             'date_creation'    => date('Y-m-d H:i:s'),
         ]);
 
-        echo json_encode(['success' => true, 'step_id' => $DB->insertId()]);
-        break;
+        tm_respond(true, 200, null, ['step_id' => (int)$DB->insertId()]);
+
+    // ── Update the linked task template's `comment` field ─────────────────
+    // (Bound to the description textarea on the workflow editor — changes
+    // here apply to every workflow that references the same template.)
+    case 'update_template_comment':
+        Session::checkRight('plugin_tasksmanager_workflows', UPDATE);
+
+        $tasktemplates_id = (int)($_POST['tasktemplates_id'] ?? 0);
+        $comment          = (string)($_POST['comment'] ?? '');
+        if (!$tasktemplates_id) {
+            tm_respond(false, 400, 'Missing tasktemplates_id');
+        }
+
+        $tpl = new TaskTemplate();
+        if (!$tpl->getFromDB($tasktemplates_id)) {
+            tm_respond(false, 404, 'Template not found');
+        }
+        $tpl->update([
+            'id'      => $tasktemplates_id,
+            'comment' => $comment,
+        ]);
+        tm_respond(true);
 
     // ── Remove a step ─────────────────────────────────────────────────────
     case 'remove_step':
-        Session::checkRight('config', UPDATE);
+        Session::checkRight('plugin_tasksmanager_workflows', UPDATE);
 
         $step_id = (int)($_POST['step_id'] ?? 0);
         if (!$step_id) {
-            echo json_encode(['success' => false, 'message' => 'Missing step_id']);
-            exit;
+            tm_respond(false, 400, 'Missing step_id');
         }
         $DB->delete('glpi_plugin_tasksmanager_workflow_steps', ['id' => $step_id]);
-        echo json_encode(['success' => true]);
-        break;
+        tm_respond(true);
 
     // ── Save new order ────────────────────────────────────────────────────
     case 'reorder_steps':
-        Session::checkRight('config', UPDATE);
+        Session::checkRight('plugin_tasksmanager_workflows', UPDATE);
 
         $workflows_id = (int)($_POST['workflows_id'] ?? 0);
         $order        = json_decode($_POST['order'] ?? '[]', true);
 
         if (!$workflows_id || !is_array($order)) {
-            echo json_encode(['success' => false, 'message' => 'Invalid parameters']);
-            exit;
+            tm_respond(false, 400, 'Invalid parameters');
         }
         foreach ($order as $position => $step_id) {
             $DB->update(
@@ -94,8 +138,7 @@ switch ($action) {
                 ['id' => (int)$step_id, 'workflows_id' => $workflows_id]
             );
         }
-        echo json_encode(['success' => true]);
-        break;
+        tm_respond(true);
 
     // ── Apply workflow to a ticket ─────────────────────────────────────────
     case 'apply_to_ticket':
@@ -105,23 +148,48 @@ switch ($action) {
         $workflows_id = (int)($_POST['workflows_id'] ?? 0);
 
         if (!$tickets_id || !$workflows_id) {
-            echo json_encode(['success' => false, 'message' => 'Missing parameters']);
-            exit;
+            tm_respond(false, 400, 'Missing parameters');
         }
 
         $ticket = new Ticket();
         if (!$ticket->getFromDB($tickets_id) || !$ticket->canUpdateItem()) {
-            echo json_encode(['success' => false, 'message' => 'Access denied']);
-            exit;
+            tm_respond(false, 403, 'Access denied');
         }
 
         if (!Workflow::applyToTicket($tickets_id, $workflows_id)) {
-            echo json_encode(['success' => false, 'message' => __('Could not apply workflow. The ticket may already have an active workflow, the workflow may have no steps, or the first task template is invalid.', 'tasksmanager')]);
-            exit;
+            tm_respond(false, 500, __(
+                'Could not apply workflow. The ticket may already have an active workflow, the workflow may have no steps, or the first task template is invalid.',
+                'tasksmanager'
+            ));
         }
 
-        echo json_encode(['success' => true]);
-        break;
+        tm_respond(true);
+
+    // ── Admin: skip the current step ──────────────────────────────────────
+    case 'skip_current_step':
+        Session::checkRight('plugin_tasksmanager_workflows', UPDATE);
+
+        $ticket_workflows_id = (int)($_POST['ticket_workflows_id'] ?? 0);
+        if (!$ticket_workflows_id) {
+            tm_respond(false, 400, 'Missing ticket_workflows_id');
+        }
+        if (!Workflow::skipCurrentStep($ticket_workflows_id)) {
+            tm_respond(false, 500, 'Skip failed (workflow may not be active)');
+        }
+        tm_respond(true);
+
+    // ── Admin: restart the current step ───────────────────────────────────
+    case 'restart_current_step':
+        Session::checkRight('plugin_tasksmanager_workflows', UPDATE);
+
+        $ticket_workflows_id = (int)($_POST['ticket_workflows_id'] ?? 0);
+        if (!$ticket_workflows_id) {
+            tm_respond(false, 400, 'Missing ticket_workflows_id');
+        }
+        if (!Workflow::restartCurrentStep($ticket_workflows_id)) {
+            tm_respond(false, 500, 'Restart failed (workflow may not be active)');
+        }
+        tm_respond(true);
 
     // ── Remove active workflow from ticket ────────────────────────────────
     case 'remove_from_ticket':
@@ -129,18 +197,42 @@ switch ($action) {
 
         $tickets_id = (int)($_POST['tickets_id'] ?? 0);
         if (!$tickets_id) {
-            echo json_encode(['success' => false, 'message' => 'Missing tickets_id']);
-            exit;
+            tm_respond(false, 400, 'Missing tickets_id');
         }
+
+        // Capture context before cancelling so we can log it
+        $active = $DB->request([
+            'FROM'  => 'glpi_plugin_tasksmanager_ticket_workflows',
+            'WHERE' => ['tickets_id' => $tickets_id, 'status' => 'active'],
+            'LIMIT' => 1,
+        ]);
+        $tw_id_for_log = 0;
+        $wf_id_for_log = 0;
+        $step_for_log  = null;
+        if (count($active) > 0) {
+            $row = $active->current();
+            $tw_id_for_log = (int)$row['id'];
+            $wf_id_for_log = (int)$row['workflows_id'];
+            $step_for_log  = (int)$row['current_step'];
+        }
+
         $DB->update(
             'glpi_plugin_tasksmanager_ticket_workflows',
             ['status' => 'cancelled'],
             ['tickets_id' => $tickets_id, 'status' => 'active']
         );
-        echo json_encode(['success' => true]);
-        break;
+
+        if ($tw_id_for_log > 0) {
+            Workflow::logEvent(
+                'workflow_removed',
+                $tickets_id,
+                $wf_id_for_log,
+                $tw_id_for_log,
+                $step_for_log
+            );
+        }
+        tm_respond(true);
 
     default:
-        echo json_encode(['success' => false, 'message' => 'Unknown action']);
-        break;
+        tm_respond(false, 400, 'Unknown action');
 }

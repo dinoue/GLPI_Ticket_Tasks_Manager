@@ -112,11 +112,30 @@ class TaskDashboard extends CommonGLPI
             echo '</div>';
             echo '</div>';
 
-            if ($can_edit) {
-                echo '<button class="btn btn-sm btn-outline-danger" id="tm-btn-remove-wf"';
-                echo ' data-tickets-id="' . $tickets_id . '">';
-                echo '<i class="ti ti-x me-1"></i>' . __('Remove workflow', 'tasksmanager');
-                echo '</button>';
+            $can_admin = Session::haveRight('plugin_tasksmanager_workflows', UPDATE);
+
+            if ($can_edit || $can_admin) {
+                echo '<div class="btn-group">';
+                if ($can_admin) {
+                    echo '<button class="btn btn-sm btn-outline-secondary" id="tm-btn-restart-step"';
+                    echo ' data-tw-id="' . (int)$tw['id'] . '"';
+                    echo ' title="' . __('Re-create the current step\'s task', 'tasksmanager') . '">';
+                    echo '<i class="ti ti-refresh me-1"></i>' . __('Restart step', 'tasksmanager');
+                    echo '</button>';
+
+                    echo '<button class="btn btn-sm btn-outline-warning" id="tm-btn-skip-step"';
+                    echo ' data-tw-id="' . (int)$tw['id'] . '"';
+                    echo ' title="' . __('Force-advance to the next step without completing the current task', 'tasksmanager') . '">';
+                    echo '<i class="ti ti-player-track-next me-1"></i>' . __('Skip step', 'tasksmanager');
+                    echo '</button>';
+                }
+                if ($can_edit) {
+                    echo '<button class="btn btn-sm btn-outline-danger" id="tm-btn-remove-wf"';
+                    echo ' data-tickets-id="' . $tickets_id . '">';
+                    echo '<i class="ti ti-x me-1"></i>' . __('Remove workflow', 'tasksmanager');
+                    echo '</button>';
+                }
+                echo '</div>';
             }
 
             echo '</div></div></div>';
@@ -144,6 +163,9 @@ class TaskDashboard extends CommonGLPI
                 echo '</td></tr>';
             }
             echo '</tbody></table>';
+
+            // ── Audit log (history) ───────────────────────────────────────
+            self::renderHistory($tickets_id, 12);
 
         } else {
             // No active workflow — show selector. If a workflow was previously
@@ -174,6 +196,9 @@ class TaskDashboard extends CommonGLPI
                         . Html::convDateTime($done['date_mod']) . '</span>';
                 }
                 echo '</div></div>';
+
+                // Keep the audit trail visible even after the workflow finishes.
+                self::renderHistory($tickets_id, 12);
             } else {
                 echo '<p class="text-muted">' . __('No active workflow on this ticket.', 'tasksmanager') . '</p>';
             }
@@ -184,7 +209,7 @@ class TaskDashboard extends CommonGLPI
                 if (empty($workflows)) {
                     echo '<div class="alert alert-info">';
                     echo __('No workflows defined yet.', 'tasksmanager') . ' ';
-                    if (Session::haveRight('config', UPDATE)) {
+                    if (Session::haveRight('plugin_tasksmanager_workflows', UPDATE)) {
                         echo '<a href="' . Plugin::getWebDir('tasksmanager') . '/front/workflow.list.php">';
                         echo __('Create a workflow', 'tasksmanager') . '</a>.';
                     }
@@ -216,13 +241,14 @@ class TaskDashboard extends CommonGLPI
         echo '  const m=document.querySelector("meta[property=\'glpi:csrf_token\']");';
         echo '  return m?m.getAttribute("content"):"";';
         echo '}';
+        // Endpoint contract: { ok: bool, error?: string, data?: object }
         echo 'function post(data){';
         echo '  const fd=new FormData();';
         echo '  for(const[k,v] of Object.entries(data)) fd.append(k,v);';
         echo '  return fetch(ajaxUrl,{method:"POST",body:fd,credentials:"same-origin",';
         echo '    headers:{"X-Requested-With":"XMLHttpRequest","X-Glpi-Csrf-Token":csrfToken()}})';
-        echo '    .then(r=>{if(!r.ok)return Promise.reject("HTTP "+r.status);return r.json();})';
-        echo '    .catch(err=>{console.error("Workflow AJAX:",err);return{success:false,message:String(err)};});';
+        echo '    .then(r=>r.json().catch(()=>({ok:false,error:"HTTP "+r.status})))';
+        echo '    .catch(err=>{console.error("Workflow AJAX:",err);return{ok:false,error:String(err)};});';
         echo '}';
 
         // Apply button
@@ -231,7 +257,7 @@ class TaskDashboard extends CommonGLPI
         echo '  const sel=document.getElementById("tm-wf-select");';
         echo '  if(!sel||!sel.value){alert(' . json_encode(__('Please select a workflow.', 'tasksmanager')) . ');return;}';
         echo '  post({action:"apply_to_ticket",tickets_id:btnApply.dataset.ticketsId,workflows_id:sel.value})';
-        echo '    .then(d=>{if(d.success){location.reload();}else{alert(d.message||"Error");}});';
+        echo '    .then(d=>{if(d.ok){location.reload();}else{alert(d.error||"Error");}});';
         echo '});}';
 
         // Remove button
@@ -239,10 +265,116 @@ class TaskDashboard extends CommonGLPI
         echo 'if(btnRemove){btnRemove.addEventListener("click",function(){';
         echo '  if(!confirm(' . json_encode(__('Remove the active workflow from this ticket?', 'tasksmanager')) . ')) return;';
         echo '  post({action:"remove_from_ticket",tickets_id:btnRemove.dataset.ticketsId})';
-        echo '    .then(d=>{if(d.success){location.reload();}else{alert(d.message||"Error");}});';
+        echo '    .then(d=>{if(d.ok){location.reload();}else{alert(d.error||"Error");}});';
+        echo '});}';
+
+        // Skip step button
+        echo 'const btnSkip=document.getElementById("tm-btn-skip-step");';
+        echo 'if(btnSkip){btnSkip.addEventListener("click",function(){';
+        echo '  if(!confirm(' . json_encode(__('Force-advance past the current step? The task will be marked Done.', 'tasksmanager')) . ')) return;';
+        echo '  post({action:"skip_current_step",ticket_workflows_id:btnSkip.dataset.twId})';
+        echo '    .then(d=>{if(d.ok){location.reload();}else{alert(d.error||"Error");}});';
+        echo '});}';
+
+        // Restart step button
+        echo 'const btnRestart=document.getElementById("tm-btn-restart-step");';
+        echo 'if(btnRestart){btnRestart.addEventListener("click",function(){';
+        echo '  if(!confirm(' . json_encode(__('Restart the current step? A fresh task will be created and the existing one marked Done.', 'tasksmanager')) . ')) return;';
+        echo '  post({action:"restart_current_step",ticket_workflows_id:btnRestart.dataset.twId})';
+        echo '    .then(d=>{if(d.ok){location.reload();}else{alert(d.error||"Error");}});';
         echo '});}';
 
         echo '})();';
         echo '</script>';
+    }
+
+    /**
+     * Render the workflow audit log for a ticket as a collapsible "History"
+     * card. Silently no-ops if the events table is missing (pre-1.3.14
+     * installs that haven't run the upgrade yet) or there are no events.
+     */
+    private static function renderHistory(int $tickets_id, int $limit = 12): void
+    {
+        global $DB;
+
+        if (!$DB->tableExists('glpi_plugin_tasksmanager_workflow_events')) {
+            return;
+        }
+
+        $iter = $DB->request([
+            'SELECT'    => [
+                'ev.id', 'ev.event_type', 'ev.step_order', 'ev.details',
+                'ev.users_id', 'ev.date_creation',
+                'wf.name AS wf_name',
+            ],
+            'FROM'      => 'glpi_plugin_tasksmanager_workflow_events AS ev',
+            'LEFT JOIN' => [
+                'glpi_plugin_tasksmanager_workflows AS wf' => ['ON' => ['ev' => 'workflows_id', 'wf' => 'id']],
+            ],
+            'WHERE'     => ['ev.tickets_id' => $tickets_id],
+            'ORDER'     => ['ev.date_creation DESC', 'ev.id DESC'],
+            'LIMIT'     => $limit,
+        ]);
+
+        if (count($iter) === 0) {
+            return;
+        }
+
+        $labels = [
+            'workflow_applied'   => ['ti-player-play',        __('Workflow started',  'tasksmanager')],
+            'step_started'       => ['ti-arrow-right',        __('Step started',      'tasksmanager')],
+            'step_skipped'       => ['ti-player-track-next',  __('Step skipped',      'tasksmanager')],
+            'step_restarted'     => ['ti-refresh',            __('Step restarted',    'tasksmanager')],
+            'workflow_completed' => ['ti-circle-check',       __('Workflow completed','tasksmanager')],
+            'workflow_removed'   => ['ti-x',                  __('Workflow removed',  'tasksmanager')],
+        ];
+
+        echo '<div class="card mt-3">';
+        echo '<div class="card-header py-2">';
+        echo '<h6 class="mb-0"><i class="ti ti-history me-1"></i>'
+            . __('History', 'tasksmanager') . '</h6>';
+        echo '</div>';
+        echo '<div class="card-body p-0">';
+        echo '<table class="table table-sm mb-0">';
+        echo '<thead class="table-light"><tr>';
+        echo '<th style="width:160px">' . __('When') . '</th>';
+        echo '<th>' . __('Event', 'tasksmanager') . '</th>';
+        echo '<th>' . __('User') . '</th>';
+        echo '</tr></thead><tbody>';
+
+        foreach ($iter as $ev) {
+            $type        = $ev['event_type'] ?? '';
+            [$icon, $lbl] = $labels[$type] ?? ['ti-circle-dot', $type];
+            $when        = $ev['date_creation'] ? Html::convDateTime($ev['date_creation']) : '—';
+
+            $user_name = '—';
+            if (!empty($ev['users_id'])) {
+                $u = new \User();
+                if ($u->getFromDB((int)$ev['users_id'])) {
+                    $user_name = $u->getFriendlyName();
+                }
+            }
+
+            $extra = '';
+            if (!empty($ev['step_order'])) {
+                $extra .= ' <span class="text-muted small">'
+                    . sprintf(__('step %d', 'tasksmanager'), (int)$ev['step_order'])
+                    . '</span>';
+            }
+            if (!empty($ev['wf_name'])) {
+                $extra .= ' <span class="text-muted small">— '
+                    . htmlspecialchars($ev['wf_name']) . '</span>';
+            }
+
+            echo '<tr>';
+            echo '<td class="text-muted small">' . $when . '</td>';
+            echo '<td><i class="ti ' . htmlspecialchars($icon) . ' me-1"></i>'
+                . htmlspecialchars($lbl) . $extra . '</td>';
+            echo '<td>' . htmlspecialchars($user_name) . '</td>';
+            echo '</tr>';
+        }
+
+        echo '</tbody></table>';
+        echo '</div></div>';
     }
 }

@@ -7,10 +7,11 @@
  */
 
 use Glpi\Plugin\Hooks;
+use GlpiPlugin\Tasksmanager\Profile;
 use GlpiPlugin\Tasksmanager\TaskDashboard;
 use GlpiPlugin\Tasksmanager\Workflow;
 
-define('PLUGIN_TASKSMANAGER_VERSION', '1.3.12');
+define('PLUGIN_TASKSMANAGER_VERSION', '1.4.0');
 define('PLUGIN_TASKSMANAGER_MIN_GLPI_VERSION', '11.0.0');
 define('PLUGIN_TASKSMANAGER_MAX_GLPI_VERSION', '11.0.99');
 
@@ -40,6 +41,9 @@ function plugin_init_tasksmanager(): void
 
     // Workflow tab on tickets
     Plugin::registerClass(TaskDashboard::class, ['addtabon' => ['Ticket']]);
+
+    // Rights tab on profiles (Administration → Profiles → <profile> → Tasks Manager)
+    Plugin::registerClass(Profile::class, ['addtabon' => ['Profile']]);
 
     // Auto-refresh page when a ticket task is marked as Done so the workflow
     // tab and group assignment are always in sync with the server state.
