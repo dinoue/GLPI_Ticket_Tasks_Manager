@@ -114,12 +114,14 @@ function plugin_tasksmanager_install(): bool
     // -------------------------------------------------------
     if (!$DB->tableExists('glpi_plugin_tasksmanager_workflow_steps')) {
         $DB->doQuery("CREATE TABLE `glpi_plugin_tasksmanager_workflow_steps` (
-            `id`               INT UNSIGNED NOT NULL AUTO_INCREMENT,
-            `workflows_id`     INT UNSIGNED NOT NULL DEFAULT 0,
-            `tasktemplates_id` INT UNSIGNED NOT NULL DEFAULT 0,
-            `step_order`       INT UNSIGNED NOT NULL DEFAULT 0,
-            `description`      TEXT         NULL,
-            `date_creation`    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            `id`                    INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            `workflows_id`          INT UNSIGNED NOT NULL DEFAULT 0,
+            `tasktemplates_id`      INT UNSIGNED NOT NULL DEFAULT 0,
+            `step_order`            INT UNSIGNED NOT NULL DEFAULT 0,
+            `description`           TEXT         NULL,
+            `next_step_rules`       TEXT         NULL,
+            `default_goto_step_id`  INT          NOT NULL DEFAULT 0,
+            `date_creation`         TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (`id`),
             KEY `workflows_id`  (`workflows_id`),
             KEY `step_and_order` (`workflows_id`, `step_order`)
@@ -128,6 +130,21 @@ function plugin_tasksmanager_install(): bool
         if (!$DB->fieldExists('glpi_plugin_tasksmanager_workflow_steps', 'description')) {
             $DB->doQuery("ALTER TABLE `glpi_plugin_tasksmanager_workflow_steps`
                 ADD `description` TEXT NULL AFTER `step_order`");
+        }
+        // 1.5.0: conditional routing rules (JSON). Empty / null = fall through
+        // to the next step by step_order (legacy behaviour).
+        if (!$DB->fieldExists('glpi_plugin_tasksmanager_workflow_steps', 'next_step_rules')) {
+            $DB->doQuery("ALTER TABLE `glpi_plugin_tasksmanager_workflow_steps`
+                ADD `next_step_rules` TEXT NULL AFTER `description`");
+        }
+        // 1.5.0: else / default target when no rule matches.
+        //   0  = sequential next step (legacy)
+        //  -1  = end the workflow
+        //  >0  = jump to that step id (forward-only; invalid → fall through)
+        // Signed INT, because we need -1.
+        if (!$DB->fieldExists('glpi_plugin_tasksmanager_workflow_steps', 'default_goto_step_id')) {
+            $DB->doQuery("ALTER TABLE `glpi_plugin_tasksmanager_workflow_steps`
+                ADD `default_goto_step_id` INT NOT NULL DEFAULT 0 AFTER `next_step_rules`");
         }
     }
 
@@ -265,12 +282,185 @@ function plugin_tasksmanager_ticket_add(Ticket $item): void
         'workflows_id' => $workflows_id,
     ]);
 
-    // CommonITILValidation::NONE = 1 → no approval required, apply now
-    $validation = (int)($item->fields['global_validation'] ?? \CommonITILValidation::NONE);
-    if ($validation === \CommonITILValidation::NONE) {
+    // Decide: apply now vs. wait for approval.
+    //
+    // $item->fields['global_validation'] can be stale here — when the ticket
+    // is created via a Forms destination with ValidationField, the validation
+    // request is created in post_addItem and the parent ticket's
+    // global_validation may not yet reflect WAITING by the time our hook
+    // runs. Three checks to be safe:
+    //   1. Re-read global_validation directly from the DB.
+    //   2. Count waiting TicketValidation rows (the request itself).
+    //   3. Look at the prepared input for a `_validation` payload that
+    //      Forms uses to schedule validations.
+    // Any one of them indicating "approval needed" defers the apply.
+    $validation_status = \CommonITILValidation::NONE;
+    $reread = $DB->request([
+        'SELECT' => ['global_validation'],
+        'FROM'   => 'glpi_tickets',
+        'WHERE'  => ['id' => $tickets_id],
+        'LIMIT'  => 1,
+    ]);
+    if (count($reread) > 0) {
+        $validation_status = (int)($reread->current()['global_validation'] ?? \CommonITILValidation::NONE);
+    }
+
+    $pending_validations = 0;
+    if ($DB->tableExists('glpi_ticketvalidations')) {
+        $pv = $DB->request([
+            'COUNT' => 'cnt',
+            'FROM'  => 'glpi_ticketvalidations',
+            'WHERE' => ['tickets_id' => $tickets_id, 'status' => \CommonITILValidation::WAITING],
+        ]);
+        if (count($pv) > 0) {
+            $pending_validations = (int)$pv->current()['cnt'];
+        }
+    }
+
+    // Permissive check: any input key whose name contains "validation" /
+    // "approval" is a strong hint that an approval request is being set up.
+    // This catches GLPI 11 Forms (`_validation_targets`), legacy
+    // (`_add_validation`), and any future / plugin-added keys we don't
+    // know about yet.
+    $validation_keys_seen = [];
+    foreach (array_keys((array)($item->input ?? [])) as $k) {
+        $lk = strtolower((string)$k);
+        if (str_contains($lk, 'validation') || str_contains($lk, 'approval')) {
+            // Only treat as a signal when the value is non-empty (Forms
+            // sets `_add_validation = 0` as an unconditional marker).
+            $val = $item->input[$k] ?? null;
+            if (!empty($val)) {
+                $validation_keys_seen[] = $k;
+            }
+        }
+    }
+    $input_has_validation = !empty($validation_keys_seen);
+
+    $needs_approval = $validation_status !== \CommonITILValidation::NONE
+                   || $pending_validations > 0
+                   || $input_has_validation;
+
+    // Audit: record the full diagnostic so we can see *exactly* which
+    // signals fired (or didn't) for this ticket. The `input_keys` snapshot
+    // is invaluable when a ticket created via a form path we didn't
+    // anticipate slips through the gate.
+    \GlpiPlugin\Tasksmanager\Workflow::logEvent(
+        $needs_approval ? 'workflow_pending' : 'workflow_applied_immediate',
+        $tickets_id,
+        $workflows_id,
+        0,
+        null,
+        [
+            'global_validation'    => $validation_status,
+            'pending_validations'  => $pending_validations,
+            'input_has_validation' => $input_has_validation,
+            'validation_keys_seen' => $validation_keys_seen,
+            'input_keys'           => array_keys((array)($item->input ?? [])),
+            'decision'             => $needs_approval ? 'defer' : 'apply',
+        ]
+    );
+
+    if (!$needs_approval) {
         plugin_tasksmanager_apply_pending_workflow($tickets_id);
     }
-    // Otherwise leave the pending record — plugin_tasksmanager_ticket_update will pick it up
+    // Otherwise leave the pending record — plugin_tasksmanager_ticket_update
+    // will consume it when global_validation transitions to ACCEPTED.
+
+    // Belt-and-suspenders: ALSO register a shutdown-time check. By the time
+    // PHP shuts down for this request, all Forms destination processing
+    // (including ValidationField → TicketValidation row inserts and the
+    // parent's global_validation update) has completed. If the synchronous
+    // checks above all returned "no approval needed" for a ticket that
+    // actually did get a validation set up later in post-add, the
+    // shutdown re-check will be authoritative.
+    //
+    // Safe to run alongside the synchronous apply because
+    // Workflow::applyToTicket() refuses to create a second active workflow.
+    register_shutdown_function('plugin_tasksmanager_recheck_pending_apply', $tickets_id);
+}
+
+/**
+ * End-of-request safety net. Runs after PHP shutdown, when all post-add
+ * processing is durable in the DB. Reads the live state and:
+ *   - applies the pending workflow if no approval is pending and one isn't
+ *     already active, or
+ *   - leaves the pending record alone if an approval is now visible (the
+ *     ticket_update hook will pick it up on ACCEPT)
+ */
+function plugin_tasksmanager_recheck_pending_apply(int $tickets_id): void
+{
+    global $DB;
+
+    if (!$DB || !$tickets_id) {
+        return;
+    }
+
+    // Pending record still there?
+    $pending = $DB->request([
+        'FROM'  => 'glpi_plugin_tasksmanager_pending_workflows',
+        'WHERE' => ['tickets_id' => $tickets_id],
+        'LIMIT' => 1,
+    ]);
+    if (count($pending) === 0) {
+        return; // Already consumed (or never existed)
+    }
+
+    // Already has an active workflow?
+    $active = $DB->request([
+        'FROM'  => 'glpi_plugin_tasksmanager_ticket_workflows',
+        'WHERE' => ['tickets_id' => $tickets_id, 'status' => 'active'],
+        'LIMIT' => 1,
+    ]);
+    if (count($active) > 0) {
+        return; // Workflow already running — nothing to do
+    }
+
+    // Final authoritative read of validation state.
+    $gv = \CommonITILValidation::NONE;
+    $row = $DB->request([
+        'SELECT' => ['global_validation'],
+        'FROM'   => 'glpi_tickets',
+        'WHERE'  => ['id' => $tickets_id],
+        'LIMIT'  => 1,
+    ]);
+    if (count($row) > 0) {
+        $gv = (int)($row->current()['global_validation'] ?? \CommonITILValidation::NONE);
+    }
+
+    $waiting = 0;
+    if ($DB->tableExists('glpi_ticketvalidations')) {
+        $pv = $DB->request([
+            'COUNT' => 'cnt',
+            'FROM'  => 'glpi_ticketvalidations',
+            'WHERE' => ['tickets_id' => $tickets_id, 'status' => \CommonITILValidation::WAITING],
+        ]);
+        if (count($pv) > 0) {
+            $waiting = (int)$pv->current()['cnt'];
+        }
+    }
+
+    $needs_approval = $gv !== \CommonITILValidation::NONE || $waiting > 0;
+
+    // Audit the shutdown-time decision so a divergence from the
+    // synchronous check is visible in the History card.
+    $row_pending = $pending->current();
+    $workflows_id = (int)($row_pending['workflows_id'] ?? 0);
+    \GlpiPlugin\Tasksmanager\Workflow::logEvent(
+        $needs_approval ? 'workflow_pending_recheck' : 'workflow_applied_recheck',
+        $tickets_id,
+        $workflows_id,
+        0,
+        null,
+        [
+            'global_validation_at_shutdown'  => $gv,
+            'waiting_validations_at_shutdown'=> $waiting,
+            'decision'                       => $needs_approval ? 'defer' : 'apply',
+        ]
+    );
+
+    if (!$needs_approval) {
+        plugin_tasksmanager_apply_pending_workflow($tickets_id);
+    }
 }
 
 /**
@@ -405,18 +595,28 @@ function plugin_tasksmanager_item_update(TicketTask $item): void
         return;
     }
 
-    // Find the next step
-    $next_iter = $DB->request([
-        'FROM'  => 'glpi_plugin_tasksmanager_workflow_steps',
-        'WHERE' => [
-            'workflows_id' => $workflows_id,
-            'step_order'   => ['>', $current_step_order],
-        ],
-        'ORDER' => ['step_order ASC'],
-        'LIMIT' => 1,
-    ]);
+    // Find the next step — honour conditional routing rules on the current
+    // step (1.5.0+). Falls back to the sequentially next step when no rule
+    // matches or no rules are configured. The trace captures the decision
+    // path for audit logging so you can see *why* a particular step ran.
+    $routing_trace = [];
+    $next_step = \GlpiPlugin\Tasksmanager\Workflow::resolveNextStep(
+        $workflows_id,
+        $current_step_order,
+        $tickets_id,
+        $routing_trace
+    );
 
-    if (count($next_iter) === 0) {
+    \GlpiPlugin\Tasksmanager\Workflow::logEvent(
+        'step_routed',
+        $tickets_id,
+        $workflows_id,
+        $ticket_workflows_id,
+        $current_step_order,
+        $routing_trace
+    );
+
+    if ($next_step === null) {
         // All steps done — mark workflow complete and, if the workflow has a
         // groups_id_completion configured, reassign the ticket to that group.
         $DB->update(
@@ -456,8 +656,6 @@ function plugin_tasksmanager_item_update(TicketTask $item): void
         );
         return;
     }
-
-    $next_step = $next_iter->current();
 
     // Only advance current_step if the task was actually created
     if (plugin_tasksmanager_apply_workflow_step($tickets_id, $next_step, $ticket_workflows_id)) {

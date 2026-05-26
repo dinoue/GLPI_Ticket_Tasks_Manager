@@ -140,23 +140,49 @@ class TaskDashboard extends CommonGLPI
 
             echo '</div></div></div>';
 
+            // Which steps were actually instantiated? A workflow step has a
+            // taskstate row only when applyStep ran for it. Steps with
+            // step_order < current_step but no taskstate row were *jumped
+            // over* by a routing rule (or `default_goto`) — those should
+            // render as "Skipped", not "Done".
+            $started_step_orders = [];
+            $ts_iter = $DB->request([
+                'SELECT' => ['workflow_step_order'],
+                'FROM'   => 'glpi_plugin_tasksmanager_taskstates',
+                'WHERE'  => [
+                    'ticket_workflows_id' => (int)$tw['id'],
+                    'workflow_step_order' => ['>', 0],
+                ],
+            ]);
+            foreach ($ts_iter as $row) {
+                $started_step_orders[(int)$row['workflow_step_order']] = true;
+            }
+
             // Step list overview
             echo '<table class="table table-sm mt-3">';
             echo '<thead class="table-light"><tr>';
             echo '<th>#</th><th>' . __('Task template', 'tasksmanager') . '</th><th>' . __('Status') . '</th>';
             echo '</tr></thead><tbody>';
             foreach ($all_steps as $i => $s) {
-                $num    = $i + 1;
-                $active = ((int)$s['step_order'] === (int)$tw['current_step']);
-                $done   = ((int)$s['step_order'] < (int)$tw['current_step']);
+                $num     = $i + 1;
+                $order   = (int)$s['step_order'];
+                $cur     = (int)$tw['current_step'];
+                $active  = ($order === $cur);
+                $past    = ($order <  $cur);
+                $started = !empty($started_step_orders[$order]);
+
                 echo '<tr' . ($active ? ' class="table-primary"' : '') . '>';
                 echo '<td>' . $num . '</td>';
                 echo '<td>' . htmlspecialchars($s['tpl_name'] ?? '—') . '</td>';
                 echo '<td>';
-                if ($done) {
-                    echo '<span class="badge bg-success text-white">' . __('Done') . '</span>';
-                } elseif ($active) {
+                if ($active) {
                     echo '<span class="badge bg-primary text-white">' . __('In progress') . '</span>';
+                } elseif ($past && $started) {
+                    echo '<span class="badge bg-success text-white">' . __('Done') . '</span>';
+                } elseif ($past && !$started) {
+                    // Jumped by a routing rule / default_goto — never had a task
+                    echo '<span class="badge bg-warning text-dark"><i class="ti ti-player-track-next me-1"></i>'
+                        . __('Skipped', 'tasksmanager') . '</span>';
                 } else {
                     echo '<span class="badge bg-secondary text-white">' . __('Pending') . '</span>';
                 }
@@ -182,6 +208,19 @@ class TaskDashboard extends CommonGLPI
                 'LIMIT' => 1,
             ]);
 
+            // Check for a deferred (pending-approval) workflow. The
+            // ITEM_ADD hook stores one of these when the ticket needs
+            // approval; ticket_update will consume it on ACCEPT.
+            $pending_iter = $DB->request([
+                'SELECT'    => ['pw.workflows_id', 'pw.date_creation', 'wf.name AS wf_name'],
+                'FROM'      => 'glpi_plugin_tasksmanager_pending_workflows AS pw',
+                'LEFT JOIN' => [
+                    'glpi_plugin_tasksmanager_workflows AS wf' => ['ON' => ['pw' => 'workflows_id', 'wf' => 'id']],
+                ],
+                'WHERE'     => ['pw.tickets_id' => $tickets_id],
+                'LIMIT'     => 1,
+            ]);
+
             if (count($completed_iter) > 0) {
                 $done = $completed_iter->current();
                 echo '<div class="alert alert-success d-flex align-items-center">';
@@ -199,8 +238,34 @@ class TaskDashboard extends CommonGLPI
 
                 // Keep the audit trail visible even after the workflow finishes.
                 self::renderHistory($tickets_id, 12);
+            } elseif (count($pending_iter) > 0) {
+                $pending = $pending_iter->current();
+                echo '<div class="alert alert-warning d-flex align-items-start">';
+                echo '<i class="ti ti-clock me-2 mt-1"></i>';
+                echo '<div class="flex-grow-1">';
+                echo '<strong>' . sprintf(
+                    __('Workflow %s — waiting for approval', 'tasksmanager'),
+                    htmlspecialchars($pending['wf_name'] ?? __('(unknown)', 'tasksmanager'))
+                ) . '</strong>';
+                echo '<div class="text-muted small mt-1">';
+                echo __('The workflow will start automatically when the ticket\'s approval is granted.', 'tasksmanager');
+                if (!empty($pending['date_creation'])) {
+                    echo ' <span class="ms-2">'
+                        . __('Queued', 'tasksmanager') . ': '
+                        . Html::convDateTime($pending['date_creation']) . '</span>';
+                }
+                echo '</div></div>';
+                echo '</div>';
+
+                // Show audit log here too — workflow_pending / workflow_deferred events
+                // are the diagnostic gold for "why isn't anything happening?"
+                self::renderHistory($tickets_id, 12);
             } else {
                 echo '<p class="text-muted">' . __('No active workflow on this ticket.', 'tasksmanager') . '</p>';
+                // No pending and nothing completed — but our hook may still have
+                // logged events (e.g. workflow_applied_immediate with decision=apply
+                // that then failed silently). Show recent history if any exists.
+                self::renderHistory($tickets_id, 12);
             }
 
             if ($can_edit) {
@@ -321,12 +386,17 @@ class TaskDashboard extends CommonGLPI
         }
 
         $labels = [
-            'workflow_applied'   => ['ti-player-play',        __('Workflow started',  'tasksmanager')],
-            'step_started'       => ['ti-arrow-right',        __('Step started',      'tasksmanager')],
-            'step_skipped'       => ['ti-player-track-next',  __('Step skipped',      'tasksmanager')],
-            'step_restarted'     => ['ti-refresh',            __('Step restarted',    'tasksmanager')],
-            'workflow_completed' => ['ti-circle-check',       __('Workflow completed','tasksmanager')],
-            'workflow_removed'   => ['ti-x',                  __('Workflow removed',  'tasksmanager')],
+            'workflow_applied'           => ['ti-player-play',        __('Workflow started',         'tasksmanager')],
+            'workflow_applied_immediate' => ['ti-player-play',        __('Workflow started (no approval needed)', 'tasksmanager')],
+            'workflow_pending'           => ['ti-clock',              __('Workflow deferred (approval pending)',  'tasksmanager')],
+            'workflow_pending_recheck'   => ['ti-clock',              __('Workflow deferred at shutdown (re-check)', 'tasksmanager')],
+            'workflow_applied_recheck'   => ['ti-player-play',        __('Workflow started at shutdown (re-check)',  'tasksmanager')],
+            'step_started'               => ['ti-arrow-right',        __('Step started',             'tasksmanager')],
+            'step_routed'                => ['ti-route',              __('Step routed',              'tasksmanager')],
+            'step_skipped'               => ['ti-player-track-next',  __('Step skipped',             'tasksmanager')],
+            'step_restarted'             => ['ti-refresh',            __('Step restarted',           'tasksmanager')],
+            'workflow_completed'         => ['ti-circle-check',       __('Workflow completed',       'tasksmanager')],
+            'workflow_removed'           => ['ti-x',                  __('Workflow removed',         'tasksmanager')],
         ];
 
         echo '<div class="card mt-3">';
@@ -364,6 +434,87 @@ class TaskDashboard extends CommonGLPI
             if (!empty($ev['wf_name'])) {
                 $extra .= ' <span class="text-muted small">— '
                     . htmlspecialchars($ev['wf_name']) . '</span>';
+            }
+
+            // For workflow_pending / workflow_applied_immediate, show the
+            // three approval-gate signals plus the actual input keys we saw
+            // — invaluable for diagnosing cases where Forms slipped through.
+            if (in_array($type, ['workflow_pending', 'workflow_applied_immediate'], true)
+                && !empty($ev['details'])
+            ) {
+                $det = json_decode($ev['details'], true);
+                if (is_array($det)) {
+                    $extra .= ' <span class="text-muted small">— '
+                        . sprintf(
+                            __('global_validation=%d, waiting=%d, input_has_validation=%s', 'tasksmanager'),
+                            (int)($det['global_validation'] ?? 0),
+                            (int)($det['pending_validations'] ?? 0),
+                            !empty($det['input_has_validation']) ? 'yes' : 'no'
+                        )
+                        . '</span>';
+
+                    if (!empty($det['validation_keys_seen']) && is_array($det['validation_keys_seen'])) {
+                        $extra .= '<div class="text-muted small">'
+                            . __('Validation keys seen:', 'tasksmanager') . ' '
+                            . htmlspecialchars(implode(', ', $det['validation_keys_seen']))
+                            . '</div>';
+                    }
+                    if (!empty($det['input_keys']) && is_array($det['input_keys'])) {
+                        $keys_str = implode(', ', array_map('strval', $det['input_keys']));
+                        $extra .= '<div class="text-muted small" style="word-break:break-all">'
+                            . __('Input keys:', 'tasksmanager') . ' '
+                            . htmlspecialchars(mb_substr($keys_str, 0, 500))
+                            . (mb_strlen($keys_str) > 500 ? '…' : '')
+                            . '</div>';
+                    }
+                }
+            }
+
+            // For step_routed events, surface the routing decision inline so
+            // the user can see why a particular step ran without having to
+            // inspect the raw JSON details column.
+            if ($type === 'step_routed' && !empty($ev['details'])) {
+                $det = json_decode($ev['details'], true);
+                if (is_array($det)) {
+                    $decision_map = [
+                        'rule_match'   => __('rule matched',         'tasksmanager'),
+                        'default_goto' => __('default → step',       'tasksmanager'),
+                        'default_end'  => __('default → end',        'tasksmanager'),
+                        'linear'       => __('linear next',          'tasksmanager'),
+                        'workflow_end' => __('no next step (end)',   'tasksmanager'),
+                    ];
+                    $dec   = (string)($det['decision'] ?? '');
+                    $rules = (int)($det['rules_count'] ?? 0);
+                    $extra .= ' <span class="text-muted small">— '
+                        . sprintf(__('rules: %d', 'tasksmanager'), $rules)
+                        . ', ' . ($decision_map[$dec] ?? $dec)
+                        . '</span>';
+
+                    // Show why each rule was skipped, if any rules existed
+                    if (!empty($det['evaluations']) && is_array($det['evaluations'])) {
+                        $bits = [];
+                        foreach ($det['evaluations'] as $e) {
+                            if (!is_array($e)) continue;
+                            $f = (string)($e['field'] ?? '');
+                            $o = (string)($e['op']    ?? '');
+                            $v = (string)($e['value'] ?? '');
+                            $a = $e['actual'] ?? null;
+                            $r = $e['skip_reason'] ?? null;
+                            $m = !empty($e['matched']) ? __('match', 'tasksmanager')
+                                                       : ($r ?: __('skipped', 'tasksmanager'));
+                            $actual_preview = ($a === null)
+                                ? __('(unresolved)', 'tasksmanager')
+                                : '“' . mb_substr((string)$a, 0, 60) . (mb_strlen((string)$a) > 60 ? '…' : '') . '”';
+                            $bits[] = htmlspecialchars(
+                                "{$f} {$o} \"{$v}\" vs {$actual_preview} → {$m}"
+                            );
+                        }
+                        if (!empty($bits)) {
+                            $extra .= '<div class="text-muted small" style="white-space:normal">'
+                                . implode('<br>', $bits) . '</div>';
+                        }
+                    }
+                }
             }
 
             echo '<tr>';

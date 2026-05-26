@@ -315,6 +315,377 @@ class Workflow extends CommonDBTM
     }
 
     /**
+     * Resolve which step should follow `$current_step_order` for the given ticket.
+     *
+     * Reads `next_step_rules` on the current step (JSON array). Each rule is
+     * evaluated in order against the ticket; the first match's `goto_step_id`
+     * wins. If no rule matches (or the column is empty), falls back to the
+     * sequentially next step by `step_order` — the legacy linear behaviour.
+     *
+     * Rule shape:
+     *   { "field": "content" | "name" | "form:<question_id>",
+     *     "op":    "contains" | "not_contains" | "eq" | "neq",
+     *     "value": "<string>",
+     *     "goto_step_id": <int> }
+     *
+     * Loop guard: a rule may only route to a step whose `step_order` is
+     * **greater than** the current step's — backward jumps are silently
+     * ignored to prevent infinite loops.
+     *
+     * @return array|null Step row (id, step_order, tasktemplates_id, …) or
+     *                    null when the workflow has no more steps.
+     */
+    public static function resolveNextStep(
+        int $workflows_id,
+        int $current_step_order,
+        int $tickets_id,
+        array &$trace = []
+    ): ?array {
+        global $DB;
+
+        // Diagnostic trace — populated as we go so the caller can log a
+        // step_routed audit event explaining the routing decision.
+        $trace = [
+            'current_step_order' => $current_step_order,
+            'rules_count'        => 0,
+            'evaluations'        => [],
+            'decision'           => '',
+            'next_step_id'       => 0,
+            'next_step_order'    => null,
+        ];
+
+        // Load the current step (to read its rules + default target)
+        $cur_iter = $DB->request([
+            'FROM'  => 'glpi_plugin_tasksmanager_workflow_steps',
+            'WHERE' => [
+                'workflows_id' => $workflows_id,
+                'step_order'   => $current_step_order,
+            ],
+            'LIMIT' => 1,
+        ]);
+
+        $rules        = [];
+        $default_goto = 0; //  0 = linear next, -1 = end workflow, >0 = step id
+        if (count($cur_iter) > 0) {
+            $cur_row = $cur_iter->current();
+            $raw     = $cur_row['next_step_rules'] ?? null;
+            if (!empty($raw)) {
+                $decoded = json_decode($raw, true);
+                if (is_array($decoded)) {
+                    $rules = $decoded;
+                }
+            }
+            $default_goto = (int)($cur_row['default_goto_step_id'] ?? 0);
+        }
+
+        $trace['rules_count'] = is_array($rules) ? count($rules) : 0;
+
+        // If we have rules, try them in order
+        if (!empty($rules)) {
+            foreach ($rules as $idx => $rule) {
+                if (!is_array($rule)) {
+                    continue;
+                }
+                $field = (string)($rule['field']        ?? '');
+                $op    = (string)($rule['op']           ?? '');
+                $value = (string)($rule['value']        ?? '');
+                $goto  = (int)   ($rule['goto_step_id'] ?? 0);
+
+                $eval = [
+                    'rule_index'   => $idx,
+                    'field'        => $field,
+                    'op'           => $op,
+                    'value'        => $value,
+                    'goto_step_id' => $goto,
+                    'actual'       => null,
+                    'matched'      => false,
+                    'skip_reason'  => null,
+                ];
+
+                if ($field === '' || $op === '' || $goto <= 0) {
+                    $eval['skip_reason'] = 'invalid_rule';
+                    $trace['evaluations'][] = $eval;
+                    continue;
+                }
+
+                $actual = self::getFieldValue($field, $tickets_id);
+                // Truncate to keep the audit row small but useful
+                $eval['actual'] = $actual === null
+                    ? null
+                    : mb_substr((string)$actual, 0, 200);
+
+                if ($actual === null) {
+                    $eval['skip_reason'] = 'field_unresolved';
+                    $trace['evaluations'][] = $eval;
+                    continue;
+                }
+                if (!self::evalOperator($op, $actual, $value)) {
+                    $eval['skip_reason'] = 'op_no_match';
+                    $trace['evaluations'][] = $eval;
+                    continue;
+                }
+
+                $eval['matched'] = true;
+
+                // Match — look up the goto step, but only accept forward jumps
+                $goto_iter = $DB->request([
+                    'FROM'  => 'glpi_plugin_tasksmanager_workflow_steps',
+                    'WHERE' => [
+                        'id'           => $goto,
+                        'workflows_id' => $workflows_id,
+                        'step_order'   => ['>', $current_step_order],
+                    ],
+                    'LIMIT' => 1,
+                ]);
+                if (count($goto_iter) > 0) {
+                    $row = $goto_iter->current();
+                    $eval['goto_resolved'] = true;
+                    $trace['evaluations'][] = $eval;
+                    $trace['decision']        = 'rule_match';
+                    $trace['next_step_id']    = (int)$row['id'];
+                    $trace['next_step_order'] = (int)$row['step_order'];
+                    return $row;
+                }
+                // Invalid / backward goto — fall through to the next rule
+                $eval['goto_resolved'] = false;
+                $eval['skip_reason']   = 'goto_invalid_or_backward';
+                $trace['evaluations'][] = $eval;
+            }
+        }
+
+        // No rule matched (or no rules at all) — consult the "else" default
+        // before falling back to the linear next step.
+        if ($default_goto === -1) {
+            // Explicit "end the workflow"
+            $trace['decision'] = 'default_end';
+            return null;
+        }
+        if ($default_goto > 0) {
+            $goto_iter = $DB->request([
+                'FROM'  => 'glpi_plugin_tasksmanager_workflow_steps',
+                'WHERE' => [
+                    'id'           => $default_goto,
+                    'workflows_id' => $workflows_id,
+                    'step_order'   => ['>', $current_step_order],
+                ],
+                'LIMIT' => 1,
+            ]);
+            if (count($goto_iter) > 0) {
+                $row = $goto_iter->current();
+                $trace['decision']        = 'default_goto';
+                $trace['next_step_id']    = (int)$row['id'];
+                $trace['next_step_order'] = (int)$row['step_order'];
+                return $row;
+            }
+            // Invalid (deleted / backward) — silently fall through to linear
+            $trace['default_goto_invalid'] = $default_goto;
+        }
+
+        // Linear next step by step_order (default, legacy behaviour)
+        $next_iter = $DB->request([
+            'FROM'  => 'glpi_plugin_tasksmanager_workflow_steps',
+            'WHERE' => [
+                'workflows_id' => $workflows_id,
+                'step_order'   => ['>', $current_step_order],
+            ],
+            'ORDER' => ['step_order ASC'],
+            'LIMIT' => 1,
+        ]);
+        if (count($next_iter) === 0) {
+            $trace['decision'] = 'workflow_end';
+            return null;
+        }
+        $row = $next_iter->current();
+        $trace['decision']        = 'linear';
+        $trace['next_step_id']    = (int)$row['id'];
+        $trace['next_step_order'] = (int)$row['step_order'];
+        return $row;
+    }
+
+    /**
+     * Resolve a rule's `field` reference to its current value on the ticket.
+     *
+     * Supported fields:
+     *   content              — ticket body (HTML stripped, lowercased)
+     *   name                 — ticket title (lowercased)
+     *   form:<question_id>   — answer from the GLPI Form that created the ticket
+     *
+     * Returns null when the field can't be resolved (missing ticket, missing
+     * form integration, no answer). A null actual value means the rule is
+     * skipped — it cannot match.
+     */
+    private static function getFieldValue(string $field, int $tickets_id): ?string
+    {
+        if (str_starts_with($field, 'form:')) {
+            $question_id = (int)substr($field, 5);
+            if ($question_id <= 0) {
+                return null;
+            }
+            return self::getFormAnswer($tickets_id, $question_id);
+        }
+
+        // Ticket field
+        $ticket = new \Ticket();
+        if (!$ticket->getFromDB($tickets_id)) {
+            return null;
+        }
+        switch ($field) {
+            case 'content':
+                return mb_strtolower(trim(strip_tags((string)($ticket->fields['content'] ?? ''))));
+            case 'name':
+                return mb_strtolower(trim((string)($ticket->fields['name'] ?? '')));
+            default:
+                // Allow any ticket column as a last-resort, lowercased string
+                $raw = $ticket->fields[$field] ?? null;
+                return $raw === null ? null : mb_strtolower((string)$raw);
+        }
+    }
+
+    /**
+     * Look up the answer value for `$question_id` in the AnswersSet that
+     * produced `$tickets_id`. Best-effort: returns null when GLPI Forms is
+     * not installed, the ticket wasn't created from a form, or the question
+     * has no answer.
+     */
+    private static function getFormAnswer(int $tickets_id, int $question_id): ?string
+    {
+        global $DB;
+
+        // GLPI 11 table names (verified against install/mysql/glpi-11.0.4-empty.sql):
+        //   glpi_forms_destinations_answerssets_formdestinationitems
+        //     ↳ id, forms_answerssets_id, itemtype, items_id
+        //   glpi_forms_answerssets
+        //     ↳ id, forms_forms_id, …, `answers` JSON
+        // The CommonDBRelation class is Glpi\Form\Destination\AnswersSet_FormDestinationItem.
+        // Earlier 1.5.x tried `glpi_forms_answerssets_formdestinationitems` which
+        // does not exist — the actual name uses the `destinations_` plural prefix.
+        $link_table = 'glpi_forms_destinations_answerssets_formdestinationitems';
+        if (!$DB->tableExists($link_table) || !$DB->tableExists('glpi_forms_answerssets')) {
+            return null;
+        }
+
+        $iter = $DB->request([
+            'SELECT' => ['forms_answerssets_id'],
+            'FROM'   => $link_table,
+            'WHERE'  => ['itemtype' => 'Ticket', 'items_id' => $tickets_id],
+            'LIMIT'  => 1,
+        ]);
+        if (count($iter) === 0) {
+            return null;
+        }
+        $answers_id = (int)$iter->current()['forms_answerssets_id'];
+        if ($answers_id <= 0) {
+            return null;
+        }
+
+        $a_iter = $DB->request([
+            'SELECT' => ['answers'],
+            'FROM'   => 'glpi_forms_answerssets',
+            'WHERE'  => ['id' => $answers_id],
+            'LIMIT'  => 1,
+        ]);
+        if (count($a_iter) === 0) {
+            return null;
+        }
+        $raw = $a_iter->current()['answers'] ?? null;
+        if (empty($raw)) {
+            return null;
+        }
+        $list = json_decode($raw, true);
+        if (!is_array($list)) {
+            return null;
+        }
+        foreach ($list as $a) {
+            if ((int)($a['question_id'] ?? 0) !== $question_id) {
+                continue;
+            }
+            $raw = $a['raw_answer'] ?? null;
+
+            // Prefer GLPI's own formatter: for Radio / Dropdown / Item
+            // questions the raw_answer is an option UUID or a foreign-key
+            // record, not the human-readable label. formatRawAnswer() does
+            // the lookup (Translation → option label → fk-resolved item
+            // name) so a rule of "form:16 contains PRD" works against the
+            // visible "PRD" label, not the internal "1686595752" UUID.
+            $resolved = self::formatFormAnswer((int)$question_id, $a, $raw);
+            if ($resolved !== null) {
+                return mb_strtolower(trim(strip_tags((string)$resolved)));
+            }
+
+            // Fallback: raw value, flattened to a string. Works for
+            // ShortText / LongText / Number / Date question types where
+            // raw_answer already IS the user-visible value.
+            if (is_array($raw)) {
+                // Multi-value (checkbox group) or fk record — join for
+                // substring/eq comparisons.
+                $flat = [];
+                array_walk_recursive($raw, function ($v) use (&$flat) {
+                    if (is_scalar($v)) { $flat[] = (string)$v; }
+                });
+                $raw = implode(',', $flat);
+            } elseif ($raw === null) {
+                return null;
+            }
+            return mb_strtolower(trim(strip_tags((string)$raw)));
+        }
+        return null;
+    }
+
+    /**
+     * Format a single answer through GLPI's own QuestionType machinery so
+     * UUIDs become labels, item refs become item names, etc. Returns null
+     * if the GLPI Forms classes aren't loadable or the question is gone.
+     *
+     * @param int          $question_id  The question we're trying to read
+     * @param array        $answer_row   The raw decoded JSON entry for this question
+     * @param mixed        $raw          Pre-extracted raw_answer (same as $answer_row['raw_answer'])
+     */
+    private static function formatFormAnswer(int $question_id, array $answer_row, mixed $raw): ?string
+    {
+        if (!class_exists('\\Glpi\\Form\\Question')) {
+            return null;
+        }
+        try {
+            // Try to load the live Question — gives us the option map for
+            // Radio/Dropdown lookups. If the question has been deleted, we
+            // can still try Answer::fromDecodedJsonData which uses the
+            // stored question_label/raw_question_type but is less accurate
+            // (no current option labels).
+            $question = \Glpi\Form\Question::getById($question_id);
+            if ($question === false) {
+                return null;
+            }
+            $type = $question->getQuestionType();
+            if ($type === null) {
+                return null;
+            }
+            // formatRawAnswer() may HTML-escape some types — we strip tags
+            // upstream, so this is fine.
+            return (string)$type->formatRawAnswer($raw, $question);
+        } catch (\Throwable $e) {
+            // Never let a Forms quirk break the workflow advance — fall
+            // back to the raw-value path on the caller side.
+            return null;
+        }
+    }
+
+    /**
+     * Evaluate a rule operator. `$actual` is already lowercased; we lowercase
+     * `$value` here so comparisons are case-insensitive end-to-end.
+     */
+    private static function evalOperator(string $op, string $actual, string $value): bool
+    {
+        $needle = mb_strtolower(trim($value));
+        switch ($op) {
+            case 'contains':     return $needle !== '' && str_contains($actual, $needle);
+            case 'not_contains': return $needle === '' || !str_contains($actual, $needle);
+            case 'eq':           return $actual === $needle;
+            case 'neq':          return $actual !== $needle;
+            default:             return false;
+        }
+    }
+
+    /**
      * Force-advance a workflow past its current step (admin override).
      *
      * Marks any in-progress task at the current step as Done (so it disappears
@@ -345,18 +716,21 @@ class Workflow extends CommonDBTM
         try {
             self::markCurrentTaskDone($tickets_id, $ticket_workflows_id, $current_step_order);
 
-            // Find the next step
-            $next_iter = $DB->request([
-                'FROM'  => 'glpi_plugin_tasksmanager_workflow_steps',
-                'WHERE' => [
-                    'workflows_id' => $workflows_id,
-                    'step_order'   => ['>', $current_step_order],
-                ],
-                'ORDER' => ['step_order ASC'],
-                'LIMIT' => 1,
-            ]);
+            // Find the next step — honours conditional routing rules
+            // configured on the current step (1.5.0+).
+            $routing_trace = [];
+            $next_step = self::resolveNextStep($workflows_id, $current_step_order, $tickets_id, $routing_trace);
 
-            if (count($next_iter) === 0) {
+            self::logEvent(
+                'step_routed',
+                $tickets_id,
+                $workflows_id,
+                $ticket_workflows_id,
+                $current_step_order,
+                $routing_trace + ['triggered_by' => 'skip']
+            );
+
+            if ($next_step === null) {
                 // No next step — complete the workflow.
                 $DB->update(
                     'glpi_plugin_tasksmanager_ticket_workflows',
@@ -374,7 +748,6 @@ class Workflow extends CommonDBTM
                 return true;
             }
 
-            $next_step = $next_iter->current();
             if (!self::applyStep($tickets_id, $next_step, $ticket_workflows_id)) {
                 return false;
             }

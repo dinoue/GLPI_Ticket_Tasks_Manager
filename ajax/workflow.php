@@ -18,6 +18,8 @@
  *   remove_step               – remove a step
  *   reorder_steps             – save new step order (array of step IDs)
  *   update_template_comment   – update the linked task template's comment
+ *   save_step_rules           – persist the JSON conditional-routing rules for a step
+ *   list_form_questions       – return [{id,label}] of all defined form questions
  *   apply_to_ticket           – assign a workflow to a ticket and create its first task
  *   remove_from_ticket        – cancel the active workflow on a ticket
  */
@@ -86,7 +88,10 @@ switch ($action) {
             'date_creation'    => date('Y-m-d H:i:s'),
         ]);
 
-        tm_respond(true, 200, null, ['step_id' => (int)$DB->insertId()]);
+        tm_respond(true, 200, null, [
+            'step_id'    => (int)$DB->insertId(),
+            'step_order' => $step_order,
+        ]);
 
     // ── Update the linked task template's `comment` field ─────────────────
     // (Bound to the description textarea on the workflow editor — changes
@@ -109,6 +114,191 @@ switch ($action) {
             'comment' => $comment,
         ]);
         tm_respond(true);
+
+    // ── Save conditional-routing rules for a step (1.5.0+) ────────────────
+    // Body:
+    //   step_id              : int
+    //   rules                : JSON-encoded array of { field, op, value, goto_step_id }
+    //   default_goto_step_id : int (0 = linear next, -1 = end workflow, >0 = step id)
+    case 'save_step_rules':
+        Session::checkRight('plugin_tasksmanager_workflows', UPDATE);
+
+        $step_id      = (int)($_POST['step_id'] ?? 0);
+        $rules_raw    = (string)($_POST['rules'] ?? '');
+        // Use a sentinel so we can tell "0 sent" vs "field omitted" — if the
+        // caller didn't send the key at all, we leave the column alone.
+        $default_sent = array_key_exists('default_goto_step_id', $_POST);
+        $default_goto = $default_sent ? (int)$_POST['default_goto_step_id'] : 0;
+
+        if (!$step_id) {
+            tm_respond(false, 400, 'Missing step_id');
+        }
+
+        $decoded = json_decode($rules_raw, true);
+        if ($rules_raw !== '' && !is_array($decoded)) {
+            tm_respond(false, 400, 'Invalid rules JSON');
+        }
+
+        // Normalise / whitelist: drop unknown fields, coerce types, skip empty
+        $allowed_ops = ['contains', 'not_contains', 'eq', 'neq'];
+        $clean = [];
+        foreach ((array)$decoded as $r) {
+            if (!is_array($r)) { continue; }
+            $field = trim((string)($r['field'] ?? ''));
+            $op    = (string)($r['op']           ?? '');
+            $value = (string)($r['value']        ?? '');
+            $goto  = (int)   ($r['goto_step_id'] ?? 0);
+            if ($field === '' || $goto <= 0) { continue; }
+            if (!in_array($op, $allowed_ops, true)) { continue; }
+            $clean[] = [
+                'field'        => $field,
+                'op'           => $op,
+                'value'        => $value,
+                'goto_step_id' => $goto,
+            ];
+        }
+
+        // Clamp default_goto: anything other than -1 / 0 / a positive step id
+        // gets coerced to 0 (linear). The resolver re-validates forward-only
+        // at evaluation time, so an invalid step id here is harmless.
+        if ($default_goto < -1) { $default_goto = 0; }
+
+        $update = ['next_step_rules' => empty($clean) ? null : json_encode($clean)];
+        if ($default_sent) {
+            $update['default_goto_step_id'] = $default_goto;
+        }
+
+        $DB->update(
+            'glpi_plugin_tasksmanager_workflow_steps',
+            $update,
+            ['id' => $step_id]
+        );
+        tm_respond(true, 200, null, [
+            'rule_count'           => count($clean),
+            'default_goto_step_id' => $default_goto,
+        ]);
+
+    // ── List form questions (for the rule-field dropdown) ────────────────
+    // Returns [{id, label, form_name}] — used to populate the field picker
+    // when building "answer to form question equals …" rules.
+    //
+    // If `workflows_id` is supplied, we first look up which forms reference
+    // *this* workflow (via their Ticket destination's WorkflowField config)
+    // and restrict the question list to those forms. This keeps the
+    // dropdown small and relevant — you only see questions that can
+    // actually be evaluated on tickets created by this workflow.
+    //
+    // If no form references the workflow yet (e.g. you're building rules
+    // ahead of wiring up the destination), falls back to ALL questions
+    // and flags `filtered_by_workflow=false` so the UI can show a hint.
+    case 'list_form_questions':
+        Session::checkRight('plugin_tasksmanager_workflows', UPDATE);
+
+        $workflows_id = (int)($_POST['workflows_id'] ?? 0);
+
+        // Step 1: figure out which forms reference this workflow.
+        //
+        // The config column on glpi_forms_destinations_formdestinations is a
+        // JSON object keyed by the slugified FQCN of each ConfigField
+        // (AbstractConfigField::getKey() returns Toolbox::slugify(static::class)
+        // and is declared `final`, so our class constant `KEY` is NOT what
+        // GLPI uses). For our WorkflowField the real key is something like
+        // `glpiplugin-tasksmanager-form-destination-workflowfield`.
+        //
+        // We compute it dynamically via getKey() so this stays correct if
+        // the class moves or GLPI changes its slugify scheme. Also scan all
+        // top-level config keys as a defensive sweep — catches the workflow
+        // id no matter how GLPI keyed it.
+        $form_ids_filter = null;
+        if ($workflows_id > 0
+            && $DB->tableExists('glpi_forms_destinations_formdestinations')
+            && class_exists('\\GlpiPlugin\\Tasksmanager\\Form\\Destination\\WorkflowField')
+        ) {
+            $wf_field_key = \GlpiPlugin\Tasksmanager\Form\Destination\WorkflowField::getKey();
+
+            $form_ids = [];
+            foreach ($DB->request([
+                'SELECT' => ['forms_forms_id', 'config'],
+                'FROM'   => 'glpi_forms_destinations_formdestinations',
+            ]) as $row) {
+                $cfg = json_decode((string)($row['config'] ?? ''), true);
+                if (!is_array($cfg)) {
+                    continue;
+                }
+
+                // Primary check: the canonical slugified key
+                $val = $cfg[$wf_field_key]['value'] ?? null;
+
+                // Defensive sweep: any field whose value matches our id and
+                // whose key plausibly belongs to us (contains "tasksmanager"
+                // or "workflow") — so we never mistake another plugin's
+                // field for ours.
+                if ((int)$val !== $workflows_id) {
+                    foreach ($cfg as $k => $v) {
+                        if (!is_array($v) || !isset($v['value'])) continue;
+                        if ((int)$v['value'] !== $workflows_id)   continue;
+                        $lk = strtolower((string)$k);
+                        if (str_contains($lk, 'tasksmanager') || str_contains($lk, 'workflow')) {
+                            $val = $v['value'];
+                            break;
+                        }
+                    }
+                }
+
+                if ((int)$val === $workflows_id) {
+                    $form_ids[(int)$row['forms_forms_id']] = true;
+                }
+            }
+            if (!empty($form_ids)) {
+                $form_ids_filter = array_keys($form_ids);
+            }
+        }
+
+        $out = [];
+        if ($DB->tableExists('glpi_forms_questions')) {
+            $can_join_form = $DB->tableExists('glpi_forms_sections')
+                          && $DB->tableExists('glpi_forms_forms');
+
+            if ($can_join_form) {
+                $req = [
+                    'SELECT'    => [
+                        'q.id', 'q.name',
+                        'f.name AS form_name',
+                    ],
+                    'FROM'      => 'glpi_forms_questions AS q',
+                    'LEFT JOIN' => [
+                        'glpi_forms_sections AS s' => [
+                            'ON' => ['q' => 'forms_sections_id', 's' => 'id'],
+                        ],
+                        'glpi_forms_forms AS f' => [
+                            'ON' => ['s' => 'forms_forms_id', 'f' => 'id'],
+                        ],
+                    ],
+                    'ORDER'     => ['form_name ASC', 'q.id ASC'],
+                ];
+                if ($form_ids_filter !== null) {
+                    $req['WHERE'] = ['f.id' => $form_ids_filter];
+                }
+            } else {
+                $req = [
+                    'SELECT' => ['q.id', 'q.name'],
+                    'FROM'   => 'glpi_forms_questions AS q',
+                    'ORDER'  => ['q.id ASC'],
+                ];
+            }
+            foreach ($DB->request($req) as $row) {
+                $out[] = [
+                    'id'        => (int)$row['id'],
+                    'label'     => (string)($row['name'] ?? ''),
+                    'form_name' => (string)($row['form_name'] ?? ''),
+                ];
+            }
+        }
+        tm_respond(true, 200, null, [
+            'questions'            => $out,
+            'filtered_by_workflow' => $form_ids_filter !== null,
+            'matching_form_count'  => $form_ids_filter !== null ? count($form_ids_filter) : 0,
+        ]);
 
     // ── Remove a step ─────────────────────────────────────────────────────
     case 'remove_step':
