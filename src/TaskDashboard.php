@@ -366,7 +366,10 @@ class TaskDashboard extends CommonGLPI
             return;
         }
 
-        $iter = $DB->request([
+        // Pull events oldest-first so begin/delay are easy to compute, then
+        // reverse for display. We bring back the most recent $limit events
+        // via a subquery so begin/delay reflect the *visible* window.
+        $iter_desc = $DB->request([
             'SELECT'    => [
                 'ev.id', 'ev.event_type', 'ev.step_order', 'ev.details',
                 'ev.users_id', 'ev.date_creation',
@@ -381,9 +384,45 @@ class TaskDashboard extends CommonGLPI
             'LIMIT'     => $limit,
         ]);
 
-        if (count($iter) === 0) {
+        if (count($iter_desc) === 0) {
             return;
         }
+
+        // Materialise + flip to ASC so we can walk forwards for begin/delay.
+        $events_asc = array_reverse(iterator_to_array($iter_desc));
+
+        // Reference time = ticket creation, matching timelineticket's
+        // `begin` semantics. Falls back to the first event time if the
+        // ticket row is unreadable.
+        $ticket = new \Ticket();
+        $ticket_ts = null;
+        if ($ticket->getFromDB($tickets_id) && !empty($ticket->fields['date'])) {
+            $ticket_ts = strtotime($ticket->fields['date']);
+        }
+        if (!$ticket_ts && !empty($events_asc[0]['date_creation'])) {
+            $ticket_ts = strtotime($events_asc[0]['date_creation']);
+        }
+
+        // Walk ASC, attach begin (seconds from ticket creation) and delay
+        // (seconds since previous event).
+        $previous_ts = null;
+        foreach ($events_asc as &$ev) {
+            $ts = $ev['date_creation'] ? strtotime($ev['date_creation']) : null;
+            $ev['begin'] = ($ts && $ticket_ts)   ? max(0, $ts - $ticket_ts)   : 0;
+            $ev['delay'] = ($ts && $previous_ts) ? max(0, $ts - $previous_ts) : 0;
+            $previous_ts = $ts;
+        }
+        unset($ev);
+
+        // Detect timelineticket — if installed, mention compatibility in the
+        // card footer so users know our log shares the same begin/delay
+        // semantics as their AssignGroup / AssignUser / AssignState views.
+        $tlt_installed = $DB->tableExists('glpi_plugin_timelineticket_assigngroups')
+                      || $DB->tableExists('glpi_plugin_timelineticket_assignusers')
+                      || $DB->tableExists('glpi_plugin_timelineticket_assignstates');
+
+        // Display order is newest-first.
+        $iter = array_reverse($events_asc);
 
         $labels = [
             'workflow_applied'           => ['ti-player-play',        __('Workflow started',         'tasksmanager')],
@@ -400,9 +439,15 @@ class TaskDashboard extends CommonGLPI
         ];
 
         echo '<div class="card mt-3">';
-        echo '<div class="card-header py-2">';
+        echo '<div class="card-header py-2 d-flex justify-content-between align-items-center">';
         echo '<h6 class="mb-0"><i class="ti ti-history me-1"></i>'
             . __('History', 'tasksmanager') . '</h6>';
+        if ($tlt_installed) {
+            echo '<span class="badge bg-info-lt" title="'
+                . htmlspecialchars(__('Begin / Delay columns use the same semantics as the TimelineTicket plugin\'s debug reports.', 'tasksmanager'))
+                . '"><i class="ti ti-timeline me-1"></i>'
+                . __('TimelineTicket compatible', 'tasksmanager') . '</span>';
+        }
         echo '</div>';
         echo '<div class="card-body p-0">';
         echo '<table class="table table-sm mb-0">';
@@ -410,6 +455,12 @@ class TaskDashboard extends CommonGLPI
         echo '<th style="width:160px">' . __('When') . '</th>';
         echo '<th>' . __('Event', 'tasksmanager') . '</th>';
         echo '<th>' . __('User') . '</th>';
+        echo '<th class="text-end" style="width:160px" title="'
+            . htmlspecialchars(__('Time since the ticket was created.', 'tasksmanager'))
+            . '">' . __('Begin', 'tasksmanager') . '</th>';
+        echo '<th class="text-end" style="width:160px" title="'
+            . htmlspecialchars(__('Time since the previous workflow event.', 'tasksmanager'))
+            . '">' . __('Delay', 'tasksmanager') . '</th>';
         echo '</tr></thead><tbody>';
 
         foreach ($iter as $ev) {
@@ -522,6 +573,17 @@ class TaskDashboard extends CommonGLPI
             echo '<td><i class="ti ' . htmlspecialchars($icon) . ' me-1"></i>'
                 . htmlspecialchars($lbl) . $extra . '</td>';
             echo '<td>' . htmlspecialchars($user_name) . '</td>';
+            // Begin / Delay — same semantics as timelineticket's debug reports.
+            // Html::timestampToString turns seconds → "X days Y hours Z minutes …"
+            $begin = (int)($ev['begin'] ?? 0);
+            $delay = (int)($ev['delay'] ?? 0);
+            // Match timelineticket's display granularity: "X days Y hours Z minutes W seconds"
+            echo '<td class="text-end text-muted small font-monospace">'
+                . ($begin > 0 ? htmlspecialchars(Html::timestampToString($begin, true)) : '—')
+                . '</td>';
+            echo '<td class="text-end text-muted small font-monospace">'
+                . ($delay > 0 ? htmlspecialchars(Html::timestampToString($delay, true)) : '—')
+                . '</td>';
             echo '</tr>';
         }
 

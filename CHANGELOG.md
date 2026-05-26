@@ -3,6 +3,35 @@
 All notable changes to **Tasks Manager** are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] — 2026-05-26
+
+### Added
+- **TimelineTicket-compatible "Begin" and "Delay" columns** on the
+  Workflow tab's History card. Mirrors the semantics from
+  [pluginsGLPI/timelineticket](https://github.com/pluginsGLPI/timelineticket)'s
+  debug reports:
+  - **Begin** — elapsed time from ticket creation to the event
+  - **Delay** — elapsed time since the previous workflow event
+  Both formatted via `Html::timestampToString()` — `"19 days 2 hours
+  59 minutes 16 seconds"` style — so they read identically to
+  timelineticket's existing AssignGroup / AssignUser / AssignState
+  views.
+- A small "TimelineTicket compatible" badge appears in the History
+  card header when any of timelineticket's tables
+  (`glpi_plugin_timelineticket_assigngroups`,
+  `_assignusers`, `_assignstates`) are detected — confirms the
+  columns share the same semantics as that plugin's reports.
+
+### Notes
+- No DB coupling with timelineticket: we compute begin/delay locally
+  from our own `glpi_plugin_tasksmanager_workflow_events` table. The
+  two plugins can be installed (or not) independently.
+- Workflow events you'll see with timing now include every audit
+  point: workflow start, deferred-for-approval, each step start,
+  every routing decision, step skipped / restarted, and workflow
+  completed. Makes it easy to spot "we waited 4 days at step 2" or
+  "step 3's task took 10 minutes between creation and done".
+
 ## [1.5.10] — 2026-05-26
 
 ### Changed
