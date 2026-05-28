@@ -11,7 +11,7 @@ use GlpiPlugin\Tasksmanager\Profile;
 use GlpiPlugin\Tasksmanager\TaskDashboard;
 use GlpiPlugin\Tasksmanager\Workflow;
 
-define('PLUGIN_TASKSMANAGER_VERSION', '1.6.1');
+define('PLUGIN_TASKSMANAGER_VERSION', '1.7.3');
 define('PLUGIN_TASKSMANAGER_MIN_GLPI_VERSION', '11.0.0');
 define('PLUGIN_TASKSMANAGER_MAX_GLPI_VERSION', '11.0.99');
 
@@ -49,6 +49,13 @@ function plugin_init_tasksmanager(): void
     // tab and group assignment are always in sync with the server state.
     $PLUGIN_HOOKS[Hooks::ADD_JAVASCRIPT]['tasksmanager'] = ['public/js/workflow-refresh.js'];
     $PLUGIN_HOOKS[Hooks::ADD_CSS]['tasksmanager']        = ['public/css/tasksmanager.css'];
+
+    // "Recommended solution" button injected into the ticket timeline footer
+    // (alongside GLPI's own Answer / Add task / Add solution buttons) when
+    // the active workflow has completed and has a suggested solution
+    // template configured. Pre-10.0 hook name kept for compatibility — GLPI
+    // 11 still wires it up via templates/components/itilobject/footer.html.twig.
+    $PLUGIN_HOOKS['timeline_actions']['tasksmanager'] = 'plugin_tasksmanager_timeline_actions';
 
     // Workflow field in form destinations.
     // Wrapped defensively: during early boot (Plugin::getPluginInformation)

@@ -198,10 +198,20 @@ class TaskDashboard extends CommonGLPI
             // completed on this ticket, surface that as a confirmation banner
             // so the user knows the prior run finished cleanly.
             $completed_iter = $DB->request([
-                'SELECT'    => ['wf.name AS wf_name', 'tw.date_mod'],
+                'SELECT'    => [
+                    'wf.name AS wf_name',
+                    'wf.solutiontemplates_id',
+                    'tw.date_mod',
+                    'st.name AS st_name',
+                ],
                 'FROM'      => 'glpi_plugin_tasksmanager_ticket_workflows AS tw',
                 'LEFT JOIN' => [
-                    'glpi_plugin_tasksmanager_workflows AS wf' => ['ON' => ['tw' => 'workflows_id', 'wf' => 'id']],
+                    'glpi_plugin_tasksmanager_workflows AS wf' =>
+                        ['ON' => ['tw' => 'workflows_id', 'wf' => 'id']],
+                    // Best-effort join to the SolutionTemplate name. The table
+                    // always exists in GLPI 11, so no tableExists guard needed.
+                    'glpi_solutiontemplates AS st' =>
+                        ['ON' => ['wf' => 'solutiontemplates_id', 'st' => 'id']],
                 ],
                 'WHERE' => ['tw.tickets_id' => $tickets_id, 'tw.status' => 'completed'],
                 'ORDER' => ['tw.date_mod DESC'],
@@ -223,7 +233,11 @@ class TaskDashboard extends CommonGLPI
 
             if (count($completed_iter) > 0) {
                 $done = $completed_iter->current();
-                echo '<div class="alert alert-success d-flex align-items-center">';
+                $suggested_st_id   = (int)($done['solutiontemplates_id'] ?? 0);
+                $suggested_st_name = (string)($done['st_name'] ?? '');
+
+                echo '<div class="alert alert-success">';
+                echo '<div class="d-flex align-items-center">';
                 echo '<i class="ti ti-circle-check me-2"></i>';
                 echo '<div>';
                 echo sprintf(
@@ -235,6 +249,36 @@ class TaskDashboard extends CommonGLPI
                         . Html::convDateTime($done['date_mod']) . '</span>';
                 }
                 echo '</div></div>';
+
+                // Suggested solution template — render only if the workflow
+                // has one configured AND the row still exists. Pure
+                // suggestion: clicking the button selects the template in
+                // GLPI's standard solution dropdown (so all native warnings
+                // / approval safeguards stay in the flow); we do NOT
+                // auto-create the ITILSolution.
+                if ($suggested_st_id > 0 && $suggested_st_name !== '') {
+                    echo '<hr class="my-2">';
+                    echo '<div class="d-flex align-items-center flex-wrap gap-2">';
+                    echo '<i class="ti ti-file-text me-1"></i>';
+                    echo '<span>'
+                        . sprintf(
+                            __('Suggested solution template: %s', 'tasksmanager'),
+                            '<strong>' . htmlspecialchars($suggested_st_name) . '</strong>'
+                        )
+                        . '</span>';
+                    echo '<button type="button" class="btn btn-sm btn-outline-success ms-auto"';
+                    echo ' id="tm-btn-use-solution-template"';
+                    echo ' data-solutiontemplates-id="' . $suggested_st_id . '"';
+                    echo ' data-solutiontemplates-name="' . htmlspecialchars($suggested_st_name, ENT_QUOTES) . '"';
+                    echo ' title="'
+                        . htmlspecialchars(__('Open GLPI\'s solution form with this template pre-selected. You still need to review the content and click save — GLPI\'s normal warnings (waiting for approval, etc.) still apply.', 'tasksmanager'))
+                        . '">';
+                    echo '<i class="ti ti-arrow-down-right me-1"></i>'
+                        . __('Use this template', 'tasksmanager');
+                    echo '</button>';
+                    echo '</div>';
+                }
+                echo '</div>';
 
                 // Keep the audit trail visible even after the workflow finishes.
                 self::renderHistory($tickets_id, 12);
@@ -347,6 +391,39 @@ class TaskDashboard extends CommonGLPI
         echo '  if(!confirm(' . json_encode(__('Restart the current step? A fresh task will be created and the existing one marked Done.', 'tasksmanager')) . ')) return;';
         echo '  post({action:"restart_current_step",ticket_workflows_id:btnRestart.dataset.twId})';
         echo '    .then(d=>{if(d.ok){location.reload();}else{alert(d.error||"Error");}});';
+        echo '});}';
+
+        // "Use this solution template" button on the completion banner.
+        //
+        // The actual open + Select2 pre-fill flow lives in
+        // public/js/workflow-refresh.js as `window.tmOpenSolutionWithTemplate`
+        // — same helper consumes the post-reload sessionStorage stash that
+        // gets written when the server emits X-TM-Auto-Solution-Id. We just
+        // hand it our button's data here. Falls back to a corner toast if
+        // the helper can't find GLPI's solution block (older GLPI, layout
+        // change, missing permission, etc.).
+        $toast_label   = json_encode(__('Pick this solution template:', 'tasksmanager'));
+        $toast_subtext = json_encode(__('Click GLPI\'s solution-add button below and choose this name from the template dropdown.', 'tasksmanager'));
+        echo 'const btnSolTpl=document.getElementById("tm-btn-use-solution-template");';
+        echo 'if(btnSolTpl){btnSolTpl.addEventListener("click",function(){';
+        echo '  const tplId = parseInt(btnSolTpl.dataset.solutiontemplatesId, 10) || 0;';
+        echo '  const name  = btnSolTpl.dataset.solutiontemplatesName || "";';
+        echo '  const ok = (typeof window.tmOpenSolutionWithTemplate === "function")';
+        echo '    && window.tmOpenSolutionWithTemplate(tplId, name);';
+        echo '  if (ok) return;';
+        // ── Fallback: scroll + toast guidance ────────────────────────────
+        echo '  const esc = s => s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");';
+        echo '  window.scrollTo({top:document.body.scrollHeight,behavior:"smooth"});';
+        echo '  const toast = document.createElement("div");';
+        echo '  toast.className = "alert alert-success shadow-lg position-fixed";';
+        echo '  toast.style.cssText = "bottom:24px;right:24px;z-index:10000;max-width:380px;cursor:pointer";';
+        echo '  toast.innerHTML ='
+            . ' "<strong><i class=\"ti ti-file-text me-1\"></i>" + ' . $toast_label . ' + "</strong><br>"'
+            . ' + "<span style=\"font-size:1.1em\">" + esc(name) + "</span>"'
+            . ' + "<div class=\"text-muted small mt-1\">" + ' . $toast_subtext . ' + "</div>";';
+        echo '  toast.addEventListener("click", () => toast.remove());';
+        echo '  document.body.appendChild(toast);';
+        echo '  setTimeout(() => { if (toast.parentNode) toast.remove(); }, 6000);';
         echo '});}';
 
         echo '})();';

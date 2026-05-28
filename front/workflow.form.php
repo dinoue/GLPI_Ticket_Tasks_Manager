@@ -26,6 +26,7 @@ if (isset($_POST['save_workflow'])) {
     $is_active             = isset($_POST['is_active'])             ? 1 : 0;
     $assign_ticket_to_task = isset($_POST['assign_ticket_to_task']) ? 1 : 0;
     $groups_id_completion  = (int)($_POST['groups_id_completion'] ?? 0);
+    $solutiontemplates_id  = (int)($_POST['solutiontemplates_id']  ?? 0);
 
     if ($name === '') {
         Session::addMessageAfterRedirect(__('Name is required.', 'tasksmanager'), true, ERROR);
@@ -38,6 +39,7 @@ if (isset($_POST['save_workflow'])) {
             'is_active'             => $is_active,
             'assign_ticket_to_task' => $assign_ticket_to_task,
             'groups_id_completion'  => $groups_id_completion,
+            'solutiontemplates_id'  => $solutiontemplates_id,
             'date_creation'         => date('Y-m-d H:i:s'),
         ]);
         $workflow_id = $DB->insertId();
@@ -50,6 +52,7 @@ if (isset($_POST['save_workflow'])) {
                 'is_active'             => $is_active,
                 'assign_ticket_to_task' => $assign_ticket_to_task,
                 'groups_id_completion'  => $groups_id_completion,
+                'solutiontemplates_id'  => $solutiontemplates_id,
             ],
             ['id' => $workflow_id]
         );
@@ -86,17 +89,23 @@ if (!$is_new) {
     ]));
     // Re-key so $i is positional (the iterator preserves row IDs as keys).
     $steps = array_values($steps);
-
-$tasktemplate_base_url = TaskTemplate::getFormURL();
 } else {
     $wf_data = [
         'name'                  => '',
         'is_active'             => 1,
         'assign_ticket_to_task' => 1,
         'groups_id_completion'  => 0,
+        'solutiontemplates_id'  => 0,
     ];
     $steps   = [];
 }
+
+// Computed once regardless of branch: the URL the task-template links
+// resolve to. Previously only set inside the !$is_new block, which
+// produced "Undefined variable $tasktemplate_base_url" warnings when
+// rendering the "new workflow" page (no existing steps to link, but
+// the template references the var unconditionally further down).
+$tasktemplate_base_url = TaskTemplate::getFormURL();
 
 // All task templates for the "add step" dropdown
 $all_templates = iterator_to_array($DB->request([
@@ -177,6 +186,22 @@ global $CFG_GLPI;
                         'name'      => 'groups_id_completion',
                         'value'     => (int)($wf_data['groups_id_completion'] ?? 0),
                         'condition' => ['is_assign' => 1],
+                        'display_emptychoice' => true,
+                    ]);
+                    ?>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label fw-bold" for="wf-solutiontemplate">
+                        <?= __('Suggested solution template on completion', 'tasksmanager') ?>
+                    </label>
+                    <div class="text-muted small mb-1">
+                        <?= __('When the workflow ends, the Workflow tab shows a banner naming this template so the tech can pick it from GLPI\'s standard solution dropdown. We do NOT auto-create the solution — GLPI\'s native warnings (waiting for approval, "do you really want to resolve or close this?") still gate the actual close.', 'tasksmanager') ?>
+                    </div>
+                    <?php
+                    SolutionTemplate::dropdown([
+                        'name'                => 'solutiontemplates_id',
+                        'value'               => (int)($wf_data['solutiontemplates_id'] ?? 0),
                         'display_emptychoice' => true,
                     ]);
                     ?>

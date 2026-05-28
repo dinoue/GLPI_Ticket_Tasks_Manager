@@ -3,6 +3,152 @@
 All notable changes to **Tasks Manager** are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.7.3] — 2026-05-28
+
+### Changed
+- **Replaced the auto-popping solution form with a persistent
+  "Recommended solution" button** in the ticket timeline footer.
+  The auto-pop from 1.7.2 turned out to be too intrusive — the
+  solution form would expand unbidden after every task completion,
+  taking focus from whatever the tech was reading. The new flow:
+
+  1. When a workflow has finished on the current ticket AND has a
+     `solutiontemplates_id` configured, we render a green
+     **Recommended solution** button right next to GLPI's own
+     Answer / Add task / Add solution buttons in the timeline
+     footer (via `Hooks::TIMELINE_ACTIONS`).
+  2. The button sits there persistently — the tech can read the
+     conversation, review the audit log, then click when ready.
+  3. Click → the existing
+     `window.tmOpenSolutionWithTemplate(id, name)` helper opens
+     GLPI's solution form and pre-selects the suggested template
+     in the Select2 dropdown, which fires GLPI's own
+     `solutiontemplate_update<rand>()` AJAX to fill the rich-text
+     editor with the template content.
+
+### Removed
+- `X-TM-Auto-Solution-Id` / `X-TM-Auto-Solution-Name` response
+  headers and the matching sessionStorage stash from
+  `workflow-refresh.js` — no longer needed now that the surface is
+  a clicked button instead of an automatic action.
+- `DOMContentLoaded` consumer + `showFallbackToast` in
+  `workflow-refresh.js`. The remaining file is just (a) the
+  X-TM-Workflow-Advanced reload listener and (b) the shared
+  `tmOpenSolutionWithTemplate` helper used by both the Workflow
+  tab banner button and the new timeline-footer button.
+
+### Notes
+- Native GLPI safeguards still gate the actual close. We pre-fill
+  the form; the tech reviews and clicks GLPI's own save button to
+  trigger the standard "waiting for approval" / "do you really
+  want to resolve…" prompts.
+- The "Use this template" button on the Workflow tab's completion
+  banner is unchanged — it delegates to the same shared helper, so
+  the timeline-footer button and the tab button do exactly the
+  same thing.
+
+## [1.7.2] — 2026-05-28
+
+### Changed
+- **Solution form auto-opens after the last task is marked Done.**
+  Previously, the tech had to navigate to the Workflow tab and click
+  "Use this template" to get GLPI's solution form to pop with the
+  pre-selected template. Now the entire flow fires automatically the
+  moment the last task's checkbox advances the workflow to completion:
+
+  1. Server emits two new headers alongside `X-TM-Workflow-Advanced`
+     when the workflow ends with a configured `solutiontemplates_id`:
+     - `X-TM-Auto-Solution-Id: <int>` — the SolutionTemplate id
+     - `X-TM-Auto-Solution-Name: <rfc-3986-encoded string>` — display name
+  2. `workflow-refresh.js` stashes those in `sessionStorage` and
+     triggers the existing page reload.
+  3. On `DOMContentLoaded` after reload, the same script consumes the
+     stash (single-use, 30-second TTL guard against stale flags) and
+     drives GLPI's `#new-ITILSolution-block` collapse open, then
+     injects the template into the Select2 dropdown so GLPI's own
+     `solutiontemplate_update<rand>()` handler AJAX-fills the rich-text
+     editor with the template content.
+  4. Tech sees the solution form already open, content already filled,
+     ready to review. GLPI's native warnings ("waiting for approval",
+     "do you really want to resolve…") still gate the actual save.
+
+- **Single source of truth for the open+preselect logic.** The
+  TaskDashboard "Use this template" button on the Workflow tab now
+  delegates to the same `window.tmOpenSolutionWithTemplate(id, name)`
+  helper exposed by `workflow-refresh.js`. Eliminates the duplicated
+  JS that lived in two places.
+
+### Notes
+- Sticks with the no-auto-`ITILSolution::add()` policy. We open and
+  pre-fill GLPI's standard form; the tech still has to click GLPI's
+  save button. Approval gates, validation steps, and entity checks
+  all stay in the flow.
+- Works regardless of which tab the user is currently on when the
+  checkbox advances — the sessionStorage stash survives the reload,
+  so even if the tech was on Solution / Approval / Statistics, the
+  Solution form opens on landing.
+
+## [1.7.1] — 2026-05-28
+
+### Changed
+- **"Use this template" now opens GLPI's solution form and
+  pre-selects the template automatically.** The 1.7.0 button only
+  scrolled and showed a reminder toast — the tech still had to click
+  GLPI's solution-add icon and pick the template by hand. Now a single
+  click on the banner button:
+  1. Expands GLPI's `#new-ITILSolution-block` collapse via the existing
+     `[data-bs-target]` toggle.
+  2. Injects the suggested template as a Select2 option (the dropdown
+     is remotely-sourced, so a plain `.val()` wouldn't find it
+     locally — we follow the same `new Option(text, value, true, true)`
+     + `.trigger("change")` pattern GLPI itself uses higher in
+     `form_solution.html.twig`).
+  3. Fires GLPI's own `solutiontemplate_update<rand>()` handler, which
+     AJAX-loads the template content into the rich-text editor.
+  4. Scrolls the now-open form into view.
+- The previous scroll+toast behaviour is preserved as a fallback if
+  any of those DOM targets aren't found (e.g. user lacks permission
+  to add solutions, layout changes in a future GLPI release).
+
+### Notes
+- All native GLPI safeguards still gate the actual close —
+  "This item is waiting for approval", "Do you really want to resolve
+  or close it?", entity checks, validation steps, etc. We populate
+  the form; the tech reviews the content and explicitly clicks
+  GLPI's save button.
+
+## [1.7.0] — 2026-05-27
+
+### Added
+- **Suggested solution template on workflow completion.** Each workflow
+  can now optionally point at a `SolutionTemplate`. When the workflow
+  ends, the Workflow tab's green completion banner gains a new line:
+  *"Suggested solution template: VM Server complete"* with a
+  **Use this template** button.
+
+  Clicking the button:
+  1. Smoothly scrolls to the ticket's timeline (where GLPI's
+     solution-add controls live).
+  2. Surfaces a floating toast naming the template, so the tech knows
+     exactly which entry to pick from GLPI's standard solution dropdown.
+
+  We deliberately do **not** auto-create the `ITILSolution`. Every
+  native GLPI safeguard stays in the flow — "This item is waiting for
+  approval", "Do you really want to resolve or close it?",
+  validation gates, template content rendering, attachments — because
+  the actual close still goes through GLPI's own solution form, with
+  the tech as the explicit gatekeeper.
+
+### Schema
+- `solutiontemplates_id INT UNSIGNED NOT NULL DEFAULT 0` on
+  `glpi_plugin_tasksmanager_workflows`. `0` = no suggestion (default,
+  backward-compatible). Idempotent migration.
+
+### UI
+- Workflow editor: new "Suggested solution template on completion"
+  field using GLPI's native `SolutionTemplate::dropdown()`. Saves /
+  loads alongside the other workflow metadata.
+
 ## [1.6.1] — 2026-05-27
 
 ### Security

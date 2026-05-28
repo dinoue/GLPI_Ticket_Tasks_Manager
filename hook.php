@@ -87,12 +87,14 @@ function plugin_tasksmanager_install(): bool
             `is_active`             TINYINT      NOT NULL DEFAULT 1,
             `assign_ticket_to_task` TINYINT      NOT NULL DEFAULT 1,
             `groups_id_completion`  INT UNSIGNED NOT NULL DEFAULT 0,
+            `solutiontemplates_id`  INT UNSIGNED NOT NULL DEFAULT 0,
             `date_creation`         TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
             `date_mod`              TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (`id`),
             KEY `name`                 (`name`),
             KEY `is_active`            (`is_active`),
-            KEY `groups_id_completion` (`groups_id_completion`)
+            KEY `groups_id_completion` (`groups_id_completion`),
+            KEY `solutiontemplates_id` (`solutiontemplates_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;");
     } else {
         // Upgrade: add groups_id_completion if missing
@@ -105,6 +107,17 @@ function plugin_tasksmanager_install(): bool
         if (!$DB->fieldExists('glpi_plugin_tasksmanager_workflows', 'assign_ticket_to_task')) {
             $DB->doQuery("ALTER TABLE `glpi_plugin_tasksmanager_workflows`
                 ADD `assign_ticket_to_task` TINYINT NOT NULL DEFAULT 1 AFTER `is_active`");
+        }
+        // 1.7.0: solution template to surface on workflow completion.
+        //   0 = no suggestion, >0 = SolutionTemplate id (see glpi_solutiontemplates)
+        // Pure suggestion, NOT auto-applied — the tech still has to open
+        // GLPI's solution form so all of GLPI's native safeguards
+        // ("waiting for approval", "Do you really want to resolve or
+        // close it?", etc.) keep firing.
+        if (!$DB->fieldExists('glpi_plugin_tasksmanager_workflows', 'solutiontemplates_id')) {
+            $DB->doQuery("ALTER TABLE `glpi_plugin_tasksmanager_workflows`
+                ADD `solutiontemplates_id` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `groups_id_completion`,
+                ADD KEY `solutiontemplates_id` (`solutiontemplates_id`)");
         }
     }
 
@@ -617,34 +630,65 @@ function plugin_tasksmanager_item_update(TicketTask $item): void
     );
 
     if ($next_step === null) {
-        // All steps done — mark workflow complete and, if the workflow has a
-        // groups_id_completion configured, reassign the ticket to that group.
+        // All steps done — mark workflow complete.
         $DB->update(
             'glpi_plugin_tasksmanager_ticket_workflows',
             ['status' => 'completed'],
             ['id' => $ticket_workflows_id]
         );
 
-        $completion_group = 0;
+        // Look up the parent workflow for its optional completion group +
+        // suggested solution template id (logged so the History card can
+        // surface what was offered even after the suggestion banner is
+        // dismissed).
+        $completion_group     = 0;
+        $solutiontemplates_id = 0;
+        $solutiontemplate_name = '';
         $wf_iter = $DB->request([
             'FROM'  => 'glpi_plugin_tasksmanager_workflows',
             'WHERE' => ['id' => $workflows_id],
             'LIMIT' => 1,
         ]);
         if (count($wf_iter) > 0) {
-            $wf = $wf_iter->current();
-            $completion_group = (int)($wf['groups_id_completion'] ?? 0);
+            $wf                   = $wf_iter->current();
+            $completion_group     = (int)($wf['groups_id_completion']  ?? 0);
+            $solutiontemplates_id = (int)($wf['solutiontemplates_id']  ?? 0);
             if ($completion_group > 0) {
                 \GlpiPlugin\Tasksmanager\Workflow::swapAssignActors(
                     $tickets_id,
                     0,
                     $completion_group
                 );
-                if (!headers_sent()) {
-                    header('X-TM-Workflow-Advanced: 1');
+            }
+            // Resolve the template name for the auto-open header so the
+            // browser can show it without an extra round-trip.
+            if ($solutiontemplates_id > 0) {
+                $st_iter = $DB->request([
+                    'SELECT' => ['name'],
+                    'FROM'   => 'glpi_solutiontemplates',
+                    'WHERE'  => ['id' => $solutiontemplates_id],
+                    'LIMIT'  => 1,
+                ]);
+                if (count($st_iter) > 0) {
+                    $solutiontemplate_name = (string)($st_iter->current()['name'] ?? '');
                 }
             }
         }
+
+        // Signal the browser to reload. Without this, workflow-refresh.js
+        // won't fire and the user sits on the stale "step N in progress"
+        // view, missing the completion banner + the "Recommended
+        // solution" button rendered into the timeline footer via
+        // TIMELINE_ACTIONS. Emitted unconditionally on every workflow
+        // completion (regardless of completion-group config) so the
+        // refresh is reliable.
+        if (!headers_sent()) {
+            header('X-TM-Workflow-Advanced: 1');
+        }
+        // Note: $solutiontemplate_name is still resolved above so we can
+        // log it in the audit details; the actual surfacing happens via
+        // plugin_tasksmanager_timeline_actions() on the next page load.
+        unset($solutiontemplate_name);
 
         \GlpiPlugin\Tasksmanager\Workflow::logEvent(
             'workflow_completed',
@@ -652,7 +696,10 @@ function plugin_tasksmanager_item_update(TicketTask $item): void
             $workflows_id,
             $ticket_workflows_id,
             $current_step_order,
-            ['completion_group' => $completion_group]
+            [
+                'completion_group'     => $completion_group,
+                'solutiontemplates_id' => $solutiontemplates_id,
+            ]
         );
         return;
     }
@@ -673,5 +720,183 @@ function plugin_tasksmanager_item_update(TicketTask $item): void
 function plugin_tasksmanager_apply_workflow_step(int $tickets_id, array $step, int $ticket_workflows_id): bool
 {
     return \GlpiPlugin\Tasksmanager\Workflow::applyStep($tickets_id, $step, $ticket_workflows_id);
+}
+
+/**
+ * Timeline-actions hook callback.
+ *
+ * Renders a "Recommended solution" button into the ticket / change /
+ * problem timeline footer (alongside GLPI's native Add buttons) when:
+ *   - the ITIL item is a Ticket
+ *   - it has a `completed` workflow row in ticket_workflows
+ *   - that workflow has a `solutiontemplates_id > 0` configured
+ *   - the SolutionTemplate row still exists
+ *
+ * Clicking the button calls `window.tmOpenSolutionWithTemplate(id, name)`
+ * (exposed by public/js/workflow-refresh.js), which opens GLPI's standard
+ * solution form and pre-selects the template via Select2 — same as the
+ * "Use this template" button on our Workflow tab banner. We never call
+ * `ITILSolution::add()` ourselves, so every native GLPI safeguard
+ * ("waiting for approval", "do you really want to resolve…", validation
+ * gates) stays in the flow.
+ *
+ * @param array $params Hook params (item, rand).
+ */
+function plugin_tasksmanager_timeline_actions(array $params): void
+{
+    global $DB;
+
+    $item = $params['item'] ?? null;
+    if (!($item instanceof \Ticket)) {
+        return;
+    }
+
+    $tickets_id = (int)$item->getID();
+    if ($tickets_id <= 0) {
+        return;
+    }
+
+    // Suppress when the ticket is already solved or closed — the solution
+    // has either been applied or the ticket is past the point of
+    // accepting one, so nudging the tech toward "Add solution" would be
+    // misleading. Uses CommonITILObject's status constants (SOLVED=5,
+    // CLOSED=6) so the check survives any future enum renumbering.
+    $status = (int)($item->fields['status'] ?? 0);
+    if (
+        $status === \CommonITILObject::SOLVED
+        || $status === \CommonITILObject::CLOSED
+    ) {
+        return;
+    }
+
+    // Most recent completed workflow on this ticket that has a suggested
+    // solution template configured. If multiple workflows have run
+    // historically, the latest one's template wins — usually what the
+    // tech wants.
+    $iter = $DB->request([
+        'SELECT'    => [
+            'wf.solutiontemplates_id',
+            'st.name AS st_name',
+        ],
+        'FROM'      => 'glpi_plugin_tasksmanager_ticket_workflows AS tw',
+        'LEFT JOIN' => [
+            'glpi_plugin_tasksmanager_workflows AS wf' =>
+                ['ON' => ['tw' => 'workflows_id', 'wf' => 'id']],
+            'glpi_solutiontemplates AS st' =>
+                ['ON' => ['wf' => 'solutiontemplates_id', 'st' => 'id']],
+        ],
+        'WHERE' => [
+            'tw.tickets_id' => $tickets_id,
+            'tw.status'     => 'completed',
+            'wf.solutiontemplates_id' => ['>', 0],
+        ],
+        'ORDER' => ['tw.date_mod DESC'],
+        'LIMIT' => 1,
+    ]);
+
+    if (count($iter) === 0) {
+        return;
+    }
+    $row = $iter->current();
+    $st_id   = (int)$row['solutiontemplates_id'];
+    $st_name = (string)($row['st_name'] ?? '');
+    if ($st_id <= 0 || $st_name === '') {
+        return;
+    }
+
+    // Render — output goes inline into the footer template's flow at the
+    // end of `<ul class="legacy-timeline-actions">` (the default position
+    // for TIMELINE_ACTIONS-hook output in GLPI 11). Wrapped in <li> for
+    // valid HTML inside the parent <ul>.
+    //
+    // Colour: rgb(200, 234, 253) (very light pastel blue) per UX request.
+    // Text is set to a dark slate (#0b3b58) for AA-level contrast against
+    // the pale background. A subtle pulsing animation draws the tech's
+    // attention without being aggressive (1.6s cycle, ≤ 1Hz — safely
+    // below the WCAG 2.3.1 flash threshold).
+    $label = htmlspecialchars(__('Recommended solution', 'tasksmanager'), ENT_QUOTES);
+    $title = htmlspecialchars(
+        sprintf(
+            __('Open the solution form with the workflow\'s suggested template "%s" pre-selected. GLPI\'s native warnings still apply when you save.', 'tasksmanager'),
+            $st_name
+        ),
+        ENT_QUOTES
+    );
+    $name_attr = htmlspecialchars($st_name, ENT_QUOTES);
+
+    echo '<li class="tm-recommended-solution-li" style="list-style:none;display:inline-block">';
+    echo '<button type="button"'
+        . ' class="btn ms-2 tm-btn-recommended-solution tm-pulse"'
+        . ' id="tm-btn-recommended-solution-' . $tickets_id . '"'
+        . ' data-tm-tpl-id="' . $st_id . '"'
+        . ' data-tm-tpl-name="' . $name_attr . '"'
+        . ' title="' . $title . '">'
+        . '<i class="ti ti-file-text me-1"></i>' . $label
+        . '</button>';
+    echo '</li>';
+
+    // Inline click handler. Uses the shared helper exposed by
+    // workflow-refresh.js; falls back to a corner toast if the helper
+    // can't find GLPI's solution block.
+    $toast_label = json_encode(sprintf(__('Pick this solution template: %s', 'tasksmanager'), $st_name));
+    echo '<script>(function(){'
+        . 'const btn = document.getElementById("tm-btn-recommended-solution-' . $tickets_id . '");'
+        . 'if (!btn || btn.dataset.tmBound) return;'
+        . 'btn.dataset.tmBound = "1";'
+        . 'btn.addEventListener("click", function () {'
+        .   'const id   = parseInt(btn.dataset.tmTplId, 10) || 0;'
+        .   'const name = btn.dataset.tmTplName || "";'
+        // Stop the pulse once the tech has acknowledged the suggestion —
+        // single deliberate click is what the animation was nudging
+        // toward, no reason to keep flashing afterwards.
+        .   'btn.classList.remove("tm-pulse");'
+        .   'const ok = (typeof window.tmOpenSolutionWithTemplate === "function")'
+        .              ' && window.tmOpenSolutionWithTemplate(id, name);'
+        .   'if (ok) return;'
+        .   'const t = document.createElement("div");'
+        .   't.className = "alert alert-info shadow-lg position-fixed";'
+        .   't.style.cssText = "bottom:24px;right:24px;z-index:10000;max-width:380px;cursor:pointer";'
+        .   't.textContent = ' . $toast_label . ';'
+        .   't.addEventListener("click", () => t.remove());'
+        .   'document.body.appendChild(t);'
+        .   'setTimeout(() => { if (t.parentNode) t.remove(); }, 6000);'
+        . '});'
+        . '})();</script>';
+
+    // Scoped styles. Two pieces:
+    //   1. Base look of the button (pale blue + dark slate text).
+    //   2. tm-pulse keyframe animation — alternates background brightness
+    //      and a soft halo box-shadow at ~0.6Hz. The `prefers-reduced-
+    //      motion` media query disables the animation for users who've
+    //      requested calmer UI (WCAG 2.3.3 / browser accessibility setting).
+    echo '<style>'
+        . '.tm-btn-recommended-solution {'
+        .   'background-color:rgb(200, 234, 253) !important;'
+        .   'border-color:rgb(200, 234, 253) !important;'
+        .   'color:#0b3b58 !important;'
+        .   'font-weight:500;'
+        . '}'
+        . '.tm-btn-recommended-solution:hover, .tm-btn-recommended-solution:focus {'
+        .   'background-color:rgb(170, 218, 246) !important;'
+        .   'border-color:rgb(170, 218, 246) !important;'
+        .   'color:#0b3b58 !important;'
+        . '}'
+        . '@keyframes tm-pulse {'
+        .   '0%, 100% {'
+        .     'background-color:rgb(200, 234, 253);'
+        .     'box-shadow:0 0 0 0 rgba(81, 174, 219, 0.55);'
+        .   '}'
+        .   '50% {'
+        .     'background-color:rgb(170, 218, 246);'
+        .     'box-shadow:0 0 0 8px rgba(81, 174, 219, 0);'
+        .   '}'
+        . '}'
+        . '.tm-btn-recommended-solution.tm-pulse {'
+        .   'animation:tm-pulse 1.6s ease-in-out infinite;'
+        . '}'
+        . '@media (prefers-reduced-motion: reduce) {'
+        .   '.tm-btn-recommended-solution.tm-pulse { animation:none; }'
+        . '}'
+        . '</style>';
 }
 
