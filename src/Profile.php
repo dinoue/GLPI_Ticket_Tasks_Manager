@@ -56,12 +56,23 @@ class Profile extends CommonDBTM
     }
 
     /**
-     * Tab label shown on Profile forms.
+     * Tab label + icon shown on Profile forms.
+     *
+     * Returning the bare string `self::getTypeName()` makes GLPI 11
+     * render the label without the icon — `getIcon()` alone isn't
+     * picked up for plugin tabs. Use `CommonGLPI::createTabEntry()`
+     * to bind the Tabler icon explicitly (same pattern as our
+     * TaskDashboard Workflow tab on tickets).
      */
     public function getTabNameForItem(CommonGLPI $item, $withtemplate = 0)
     {
         if ($item->getType() === GlpiProfile::class) {
-            return self::getTypeName();
+            return self::createTabEntry(
+                self::getTypeName(),
+                0,
+                $item::class,
+                self::getIcon()
+            );
         }
         return '';
     }

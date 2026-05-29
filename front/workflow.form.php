@@ -77,6 +77,9 @@ if (!$is_new) {
         'SELECT'    => [
             'wfs.id', 'wfs.step_order', 'wfs.tasktemplates_id',
             'wfs.next_step_rules', 'wfs.default_goto_step_id',
+            'wfs.sla_duration', 'wfs.sla_warning_pct', 'wfs.sla_breach_action',
+            'wfs.sla_breach_groups_id', 'wfs.sla_breach_users_id', 'wfs.sla_use_calendar',
+            'wfs.olas_id',
             'tt.name AS tpl_name',
             'tt.comment AS tpl_comment',
         ],
@@ -112,6 +115,108 @@ $all_templates = iterator_to_array($DB->request([
     'FROM'  => 'glpi_tasktemplates',
     'ORDER' => ['name ASC'],
 ]));
+
+// Assignable groups for the SLA "reassign on breach" picker. Emitted once
+// into a JS array and reused by every step's SLA panel (existing + newly
+// added), so we avoid per-step AJAX Select2 widgets that don't clone well.
+$assign_groups = [];
+foreach ($DB->request([
+    'SELECT' => ['id', 'name'],
+    'FROM'   => 'glpi_groups',
+    'WHERE'  => ['is_assign' => 1],
+    'ORDER'  => ['name ASC'],
+]) as $g) {
+    $assign_groups[] = ['id' => (int)$g['id'], 'name' => (string)$g['name']];
+}
+
+// GLPI OLAs (operational level agreements) for the "Duration source =
+// Service Level" option. We surface name + a human duration so the admin
+// can pick the right one. TTR-type OLAs are the natural fit for a step
+// deadline, but we list all and label the type.
+$olas_list = [];
+if ($DB->tableExists('glpi_olas')) {
+    foreach ($DB->request([
+        'SELECT' => ['id', 'name', 'type', 'number_time', 'definition_time'],
+        'FROM'   => 'glpi_olas',
+        'ORDER'  => ['name ASC'],
+    ]) as $o) {
+        $olas_list[] = [
+            'id'    => (int)$o['id'],
+            'name'  => (string)$o['name'],
+            // 0 = TTO (time to own), 1 = TTR (time to resolve)
+            'type'  => (int)$o['type'] === 1 ? 'TTR' : 'TTO',
+            'num'   => (int)$o['number_time'],
+            'unit'  => (string)$o['definition_time'],
+        ];
+    }
+}
+
+// Reusable SLA toggle + panel markup. Values are NOT baked in here — each
+// step carries its config in a data-sla attribute, and renderSlaInto()
+// (JS) populates these inputs on first open. Emitting the markup once and
+// reusing it for both PHP-rendered existing steps and the JS add-template
+// keeps the two in lockstep.
+ob_start();
+?>
+<button type="button" class="btn btn-sm btn-link p-0 text-decoration-none tm-toggle-sla ms-2"
+        onclick="tmToggleSla(this)">
+    <i class="ti ti-chevron-right me-1"></i>
+    <span class="tm-sla-label"><?= __('SLA', 'tasksmanager') ?></span>
+</button>
+<div class="tm-flow-sla" style="display:none">
+    <div class="d-flex flex-wrap gap-1 align-items-center">
+        <span class="small text-muted"><?= __('Duration source', 'tasksmanager') ?></span>
+        <select class="form-select form-select-sm tm-sla-source" style="max-width:180px"
+                onchange="tmSlaSourceChanged(this)">
+            <option value="custom"><?= __('Custom', 'tasksmanager') ?></option>
+            <option value="ola"><?= __('GLPI Service Level (OLA)', 'tasksmanager') ?></option>
+        </select>
+        <select class="form-select form-select-sm tm-sla-ola" style="max-width:260px;display:none"
+                onchange="tmSaveSla(this)"></select>
+    </div>
+    <div class="d-flex flex-wrap gap-1 align-items-center mt-1 tm-sla-custom-only">
+        <span class="small text-muted"><?= __('Max duration', 'tasksmanager') ?></span>
+        <input type="number" min="0" class="form-control form-control-sm tm-sla-amount"
+               style="max-width:90px" onchange="tmSaveSla(this)">
+        <select class="form-select form-select-sm tm-sla-unit" style="max-width:120px"
+                onchange="tmSaveSla(this)">
+            <option value="60"><?= __('minutes', 'tasksmanager') ?></option>
+            <option value="3600"><?= __('hours', 'tasksmanager') ?></option>
+            <option value="86400"><?= __('days', 'tasksmanager') ?></option>
+        </select>
+    </div>
+    <div class="d-flex flex-wrap gap-1 align-items-center mt-1">
+        <span class="small text-muted"><?= __('Warn at', 'tasksmanager') ?></span>
+        <input type="number" min="0" max="100" class="form-control form-control-sm tm-sla-warn"
+               style="max-width:70px" onchange="tmSaveSla(this)">
+        <span class="small text-muted">%</span>
+    </div>
+    <div class="d-flex flex-wrap gap-1 align-items-center mt-1">
+        <span class="small text-muted"><?= __('On breach', 'tasksmanager') ?></span>
+        <select class="form-select form-select-sm tm-sla-action" style="max-width:190px"
+                onchange="tmSlaActionChanged(this)">
+            <option value="notify"><?= __('notify (add followup)', 'tasksmanager') ?></option>
+            <option value="reassign"><?= __('reassign to group', 'tasksmanager') ?></option>
+            <option value="skip"><?= __('skip step', 'tasksmanager') ?></option>
+            <option value="priority_up"><?= __('raise priority', 'tasksmanager') ?></option>
+        </select>
+        <select class="form-select form-select-sm tm-sla-group" style="max-width:200px;display:none"
+                onchange="tmSaveSla(this)"></select>
+    </div>
+    <div class="form-check mt-1 tm-sla-custom-only">
+        <input type="checkbox" class="form-check-input tm-sla-cal" onchange="tmSaveSla(this)">
+        <label class="form-check-label small">
+            <?= __('Count working hours only (entity calendar)', 'tasksmanager') ?>
+        </label>
+    </div>
+    <div class="text-muted small mt-1">
+        <i class="ti ti-info-circle me-1"></i>
+        <?= __('Set duration to 0 (or no Service Level) to disable the SLA for this step. A background task checks every 5 minutes.', 'tasksmanager') ?>
+        <span class="tm-sla-status ms-2"></span>
+    </div>
+</div>
+<?php
+$sla_block_html = ob_get_clean();
 
 $ajax_url = Plugin::getWebDir('tasksmanager') . '/ajax/workflow.php';
 
@@ -243,13 +348,22 @@ global $CFG_GLPI;
                             ? (json_decode($step['next_step_rules'], true) ?: [])
                             : [];
                         $rules_count   = is_array($rules_decoded) ? count($rules_decoded) : 0;
+                        $sla_cfg = [
+                            'duration'    => (int)($step['sla_duration'] ?? 0),
+                            'warning_pct' => $step['sla_warning_pct'] === null ? 75 : (int)$step['sla_warning_pct'],
+                            'action'      => (string)($step['sla_breach_action'] ?? 'notify'),
+                            'group'       => (int)($step['sla_breach_groups_id'] ?? 0),
+                            'calendar'    => (int)($step['sla_use_calendar'] ?? 0),
+                            'olas_id'     => (int)($step['olas_id'] ?? 0),
+                        ];
                     ?>
                     <div class="tm-flow-step"
                          data-step-id="<?= (int)$step['id'] ?>"
                          data-step-order="<?= (int)$step['step_order'] ?>"
                          data-tasktemplates-id="<?= (int)$step['tasktemplates_id'] ?>"
                          data-rules='<?= htmlspecialchars(json_encode($rules_decoded ?: []), ENT_QUOTES) ?>'
-                         data-default-goto="<?= (int)($step['default_goto_step_id'] ?? 0) ?>">
+                         data-default-goto="<?= (int)($step['default_goto_step_id'] ?? 0) ?>"
+                         data-sla='<?= htmlspecialchars(json_encode($sla_cfg), ENT_QUOTES) ?>'>
                         <div class="tm-flow-card">
                             <div class="tm-flow-handle" title="<?= __('Drag to reorder', 'tasksmanager') ?>">
                                 <i class="ti ti-grip-vertical"></i>
@@ -325,6 +439,7 @@ global $CFG_GLPI;
                                         <?= __('Rules are tried in order. The first match wins. Backward jumps are ignored to prevent loops.', 'tasksmanager') ?>
                                     </div>
                                 </div>
+                                <?= $sla_block_html ?>
                             </div>
                             <div class="tm-flow-actions">
                                 <button type="button" class="btn btn-sm btn-outline-danger px-1"
@@ -373,6 +488,12 @@ global $CFG_GLPI;
     const WORKFLOW_ID       = <?= (int)$workflow_id ?>;
     const AJAX_URL          = <?= json_encode($ajax_url) ?>;
     const TASKTEMPLATE_URL  = <?= json_encode($tasktemplate_base_url) ?>;
+
+    // SLA panel markup (shared by existing + newly-added steps) and the
+    // assignable-groups list for the "reassign on breach" picker.
+    const SLA_BLOCK_HTML    = <?= json_encode($sla_block_html) ?>;
+    const TM_ASSIGN_GROUPS  = <?= json_encode($assign_groups) ?>;
+    const TM_OLAS           = <?= json_encode($olas_list) ?>;
 
     // Cache of form questions for the rule-field dropdown. Lazily loaded
     // the first time a user opens "Routing rules" on any step.
@@ -440,6 +561,7 @@ global $CFG_GLPI;
                 stepDiv.dataset.tasktemplatesId = tplId;
                 stepDiv.dataset.rules = '[]';
                 stepDiv.dataset.defaultGoto = '0';
+                stepDiv.dataset.sla = JSON.stringify({duration:0, warning_pct:75, action:'notify', group:0, calendar:0, olas_id:0});
                 stepDiv.innerHTML = `
                     <div class="tm-flow-card">
                         <div class="tm-flow-handle" title="<?= __('Drag to reorder', 'tasksmanager') ?>">
@@ -488,6 +610,7 @@ global $CFG_GLPI;
                                     <?= __('Rules are tried in order. The first match wins. If none match, the next step runs. Backward jumps are ignored to prevent loops.', 'tasksmanager') ?>
                                 </div>
                             </div>
+                            ${SLA_BLOCK_HTML}
                         </div>
                         <div class="tm-flow-actions">
                             <button type="button" class="btn btn-sm btn-outline-danger px-1"
@@ -844,6 +967,212 @@ global $CFG_GLPI;
         const stepDiv = el.closest('.tm-flow-step');
         if (stepDiv) saveStepRules(stepDiv);
     };
+
+    // ── Per-step SLA ──────────────────────────────────────────────────────────
+
+    // Build a "1 hours" / "30 minutes" style summary from seconds, picking
+    // the largest whole unit. Mirrors the unit options in the panel.
+    function slaSummary(seconds) {
+        seconds = parseInt(seconds, 10) || 0;
+        if (seconds <= 0) return '<?= __('SLA', 'tasksmanager') ?>';
+        let amount, unit;
+        if (seconds % 86400 === 0)      { amount = seconds / 86400; unit = '<?= __('day(s)', 'tasksmanager') ?>'; }
+        else if (seconds % 3600 === 0)  { amount = seconds / 3600;  unit = '<?= __('hour(s)', 'tasksmanager') ?>'; }
+        else                            { amount = Math.round(seconds / 60); unit = '<?= __('min', 'tasksmanager') ?>'; }
+        return '<?= __('SLA', 'tasksmanager') ?>: ' + amount + ' ' + unit;
+    }
+
+    // Decompose seconds into {amount, unitSeconds} choosing the largest
+    // whole unit so the editor shows e.g. "4 hours" not "240 minutes".
+    function slaDecompose(seconds) {
+        seconds = parseInt(seconds, 10) || 0;
+        if (seconds > 0 && seconds % 86400 === 0) return {amount: seconds / 86400, unit: 86400};
+        if (seconds > 0 && seconds % 3600 === 0)  return {amount: seconds / 3600,  unit: 3600};
+        if (seconds > 0)                          return {amount: Math.round(seconds / 60), unit: 60};
+        return {amount: 0, unit: 3600}; // default unit = hours when empty
+    }
+
+    function updateSlaLabel(stepDiv) {
+        const cfg = JSON.parse(stepDiv.dataset.sla || '{}');
+        const lbl = stepDiv.querySelector('.tm-sla-label');
+        if (!lbl) return;
+        if ((cfg.olas_id || 0) > 0) {
+            const ola = TM_OLAS.find(o => o.id === cfg.olas_id);
+            lbl.textContent = '<?= __('SLA', 'tasksmanager') ?>: ' + (ola ? ola.name : '<?= __('Service Level', 'tasksmanager') ?>');
+        } else {
+            lbl.textContent = slaSummary(cfg.duration || 0);
+        }
+    }
+
+    // Show/hide the custom-only rows (duration, calendar) and the OLA picker
+    // based on the selected source.
+    //
+    // NOTE: the Max-duration row carries Bootstrap's `d-flex`
+    // (= display:flex !important). A plain inline `style.display='none'`
+    // can't override an !important class rule, so we must set the inline
+    // display WITH !important priority to actually hide it. (The calendar
+    // row is `form-check`, no !important, so it would hide either way —
+    // but we use the same path for both for consistency.)
+    function applySlaSourceVisibility(panel, source) {
+        const hide = (source === 'ola');
+        panel.querySelectorAll('.tm-sla-custom-only').forEach(el => {
+            if (hide) {
+                el.style.setProperty('display', 'none', 'important');
+            } else {
+                el.style.removeProperty('display');
+            }
+        });
+        const olaEl = panel.querySelector('.tm-sla-ola');
+        if (olaEl) {
+            if (source === 'ola') {
+                olaEl.style.removeProperty('display');
+            } else {
+                olaEl.style.setProperty('display', 'none', 'important');
+            }
+        }
+    }
+
+    function renderSlaInto(stepDiv) {
+        const panel = stepDiv.querySelector('.tm-flow-sla');
+        if (!panel) return;
+        const cfg = JSON.parse(stepDiv.dataset.sla || '{}');
+        const source = (cfg.olas_id || 0) > 0 ? 'ola' : 'custom';
+
+        const dec    = slaDecompose(cfg.duration || 0);
+        const srcEl  = panel.querySelector('.tm-sla-source');
+        const olaEl  = panel.querySelector('.tm-sla-ola');
+        const amtEl  = panel.querySelector('.tm-sla-amount');
+        const uniEl  = panel.querySelector('.tm-sla-unit');
+        const warnEl = panel.querySelector('.tm-sla-warn');
+        const actEl  = panel.querySelector('.tm-sla-action');
+        const grpEl  = panel.querySelector('.tm-sla-group');
+        const calEl  = panel.querySelector('.tm-sla-cal');
+
+        if (srcEl)  srcEl.value  = source;
+        if (amtEl)  amtEl.value  = dec.amount || '';
+        if (uniEl)  uniEl.value  = String(dec.unit);
+        if (warnEl) warnEl.value = (cfg.warning_pct ?? 75);
+        if (actEl)  actEl.value  = cfg.action || 'notify';
+        if (calEl)  calEl.checked = !!cfg.calendar;
+
+        // Populate the OLA <select> once.
+        if (olaEl && !olaEl.dataset.tmFilled) {
+            let html = `<option value="0">${'<?= __('-- Select a Service Level --', 'tasksmanager') ?>'}</option>`;
+            TM_OLAS.forEach(o => {
+                html += `<option value="${o.id}">${escHtml(o.name)} (${o.type}, ${o.num} ${escHtml(o.unit)})</option>`;
+            });
+            olaEl.innerHTML = html;
+            olaEl.dataset.tmFilled = '1';
+        }
+        if (olaEl) olaEl.value = String(cfg.olas_id || 0);
+
+        // Populate the reassign-group <select> once.
+        if (grpEl && !grpEl.dataset.tmFilled) {
+            let html = `<option value="0">${'<?= __('-- Select a group --', 'tasksmanager') ?>'}</option>`;
+            TM_ASSIGN_GROUPS.forEach(g => {
+                html += `<option value="${g.id}">${escHtml(g.name)}</option>`;
+            });
+            grpEl.innerHTML = html;
+            grpEl.dataset.tmFilled = '1';
+        }
+        if (grpEl) grpEl.value = String(cfg.group || 0);
+
+        // Show the group picker only for the reassign action.
+        if (grpEl) grpEl.style.display = (cfg.action === 'reassign') ? '' : 'none';
+
+        applySlaSourceVisibility(panel, source);
+    }
+
+    function saveSla(stepDiv) {
+        const panel = stepDiv.querySelector('.tm-flow-sla');
+        if (!panel) return;
+        const status = panel.querySelector('.tm-sla-status');
+
+        const source = panel.querySelector('.tm-sla-source')?.value || 'custom';
+        const amount = parseInt(panel.querySelector('.tm-sla-amount')?.value || 0, 10) || 0;
+        const unit   = parseInt(panel.querySelector('.tm-sla-unit')?.value || 3600, 10) || 3600;
+        const warn   = parseInt(panel.querySelector('.tm-sla-warn')?.value || 0, 10) || 0;
+        const action = panel.querySelector('.tm-sla-action')?.value || 'notify';
+        const group  = parseInt(panel.querySelector('.tm-sla-group')?.value || 0, 10) || 0;
+        const cal    = panel.querySelector('.tm-sla-cal')?.checked ? 1 : 0;
+        const olaId  = (source === 'ola')
+            ? (parseInt(panel.querySelector('.tm-sla-ola')?.value || 0, 10) || 0)
+            : 0;
+        const duration = (source === 'ola') ? 0 : amount * unit;
+
+        if (status) status.textContent = '<?= __('Saving…', 'tasksmanager') ?>';
+        post({
+            action: 'save_step_sla',
+            step_id: stepDiv.dataset.stepId,
+            sla_duration: duration,
+            sla_warning_pct: warn,
+            sla_breach_action: action,
+            sla_breach_groups_id: group,
+            sla_use_calendar: cal,
+            olas_id: olaId,
+        }).then(resp => {
+            if (!resp.ok) { if (status) status.textContent = resp.error || 'Error'; return; }
+            stepDiv.dataset.sla = JSON.stringify({
+                duration: duration, warning_pct: warn, action: action,
+                group: group, calendar: cal, olas_id: olaId
+            });
+            updateSlaLabel(stepDiv);
+            if (status) {
+                status.textContent = '<?= __('Saved', 'tasksmanager') ?>';
+                setTimeout(() => { if (status) status.textContent = ''; }, 1500);
+            }
+        });
+    }
+
+    window.tmToggleSla = function (btn) {
+        const stepDiv = btn.closest('.tm-flow-step');
+        const panel   = btn.parentElement.querySelector('.tm-flow-sla');
+        if (!panel) return;
+        const chevron = btn.querySelector('i');
+        const open = panel.style.display === 'none';
+        panel.style.display = open ? '' : 'none';
+        if (chevron) {
+            chevron.classList.toggle('ti-chevron-right', !open);
+            chevron.classList.toggle('ti-chevron-down', open);
+        }
+        if (open) renderSlaInto(stepDiv);
+    };
+
+    window.tmSaveSla = function (el) {
+        const stepDiv = el.closest('.tm-flow-step');
+        if (stepDiv) saveSla(stepDiv);
+    };
+
+    // Toggle Custom vs Service Level (OLA) duration source. Updates which
+    // rows are visible, then persists. We don't save immediately when
+    // switching TO "ola" with no OLA picked yet — wait for the OLA select.
+    window.tmSlaSourceChanged = function (sel) {
+        const panel   = sel.closest('.tm-flow-sla');
+        const stepDiv = sel.closest('.tm-flow-step');
+        if (panel) applySlaSourceVisibility(panel, sel.value);
+        if (!stepDiv) return;
+        if (sel.value === 'ola') {
+            const olaVal = parseInt(panel.querySelector('.tm-sla-ola')?.value || 0, 10) || 0;
+            if (olaVal > 0) saveSla(stepDiv); // existing pick — persist now
+            // else: wait for the user to choose an OLA
+        } else {
+            saveSla(stepDiv); // back to custom — persist (clears olas_id)
+        }
+    };
+
+    // Show/hide the reassign-group picker when the breach action changes,
+    // then persist.
+    window.tmSlaActionChanged = function (sel) {
+        const panel = sel.closest('.tm-flow-sla');
+        const grpEl = panel ? panel.querySelector('.tm-sla-group') : null;
+        if (grpEl) grpEl.style.display = (sel.value === 'reassign') ? '' : 'none';
+        const stepDiv = sel.closest('.tm-flow-step');
+        if (stepDiv) saveSla(stepDiv);
+    };
+
+    // Paint the SLA summary label on every step at load (so the toggle
+    // shows "SLA: 4 hours" without needing to open the panel first).
+    document.querySelectorAll('#tm-flow .tm-flow-step').forEach(updateSlaLabel);
 
     // ── SortableJS drag-reorder ──────────────────────────────────────────────
     // GLPI 11 ships SortableJS at public/lib/sortablejs.js (loaded by the

@@ -19,6 +19,7 @@
  *   reorder_steps             – save new step order (array of step IDs)
  *   update_template_comment   – update the linked task template's comment
  *   save_step_rules           – persist the JSON conditional-routing rules for a step
+ *   save_step_sla             – persist per-step SLA + escalation config
  *   list_form_questions       – return [{id,label}] of all defined form questions
  *   apply_to_ticket           – assign a workflow to a ticket and create its first task
  *   remove_from_ticket        – cancel the active workflow on a ticket
@@ -177,6 +178,63 @@ switch ($action) {
             'rule_count'           => count($clean),
             'default_goto_step_id' => $default_goto,
         ]);
+
+    // ── Save per-step SLA config (1.8.0+) ─────────────────────────────────
+    // Body:
+    //   step_id              : int
+    //   sla_duration         : int seconds (0/empty => clear SLA on this step)
+    //   sla_warning_pct      : int 0..100
+    //   sla_breach_action    : notify | reassign | skip | priority_up
+    //   sla_breach_groups_id : int (reassign target group)
+    //   sla_breach_users_id  : int (reassign target tech)
+    //   sla_use_calendar     : 0|1
+    case 'save_step_sla':
+        Session::checkRight('plugin_tasksmanager_workflows', UPDATE);
+
+        $step_id = (int)($_POST['step_id'] ?? 0);
+        if (!$step_id) {
+            tm_respond(false, 400, 'Missing step_id');
+        }
+
+        $duration = (int)($_POST['sla_duration'] ?? 0);
+        if ($duration < 0) { $duration = 0; }
+
+        $warn = (int)($_POST['sla_warning_pct'] ?? 75);
+        if ($warn < 0)   { $warn = 0; }
+        if ($warn > 100) { $warn = 100; }
+
+        $action = (string)($_POST['sla_breach_action'] ?? \GlpiPlugin\Tasksmanager\Sla::ACTION_NOTIFY);
+        if (!in_array($action, \GlpiPlugin\Tasksmanager\Sla::ACTIONS, true)) {
+            $action = \GlpiPlugin\Tasksmanager\Sla::ACTION_NOTIFY;
+        }
+
+        $breach_group = (int)($_POST['sla_breach_groups_id'] ?? 0);
+        $breach_user  = (int)($_POST['sla_breach_users_id']  ?? 0);
+        if ($breach_group < 0) { $breach_group = 0; }
+        if ($breach_user  < 0) { $breach_user  = 0; }
+
+        $use_calendar = !empty($_POST['sla_use_calendar']) ? 1 : 0;
+        $olas_id      = (int)($_POST['olas_id'] ?? 0);
+        if ($olas_id < 0) { $olas_id = 0; }
+
+        // When an OLA is referenced, the budget + calendar come from it, so
+        // we clear the custom duration to avoid ambiguity (engine prefers
+        // olas_id when > 0, but keeping the columns consistent avoids stale
+        // values surfacing in the editor). duration 0 + olas_id 0 = no SLA.
+        $DB->update(
+            'glpi_plugin_tasksmanager_workflow_steps',
+            [
+                'sla_duration'         => ($olas_id === 0 && $duration > 0) ? $duration : null,
+                'sla_warning_pct'      => $warn,
+                'sla_breach_action'    => $action,
+                'sla_breach_groups_id' => $breach_group,
+                'sla_breach_users_id'  => $breach_user,
+                'sla_use_calendar'     => $use_calendar,
+                'olas_id'              => $olas_id,
+            ],
+            ['id' => $step_id]
+        );
+        tm_respond(true, 200, null, ['sla_duration' => $duration, 'olas_id' => $olas_id]);
 
     // ── List form questions (for the rule-field dropdown) ────────────────
     // Returns [{id, label, form_name}] — used to populate the field picker

@@ -3,6 +3,100 @@
 All notable changes to **Tasks Manager** are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.8.1] — 2026-05-29
+
+### Added
+- **Hybrid SLA source — reuse GLPI Service Levels.** A step's SLA budget
+  can now be sourced two ways, chosen per step in the SLA panel:
+  - **Custom** (default) — the duration + working-hours toggle you set
+    directly on the step (1.8.0 behaviour).
+  - **GLPI Service Level (OLA)** — reference an existing GLPI OLA. The
+    engine reads the OLA's `number_time`/`definition_time` for the
+    budget and its parent SLM's calendar for working-hours elapsed
+    (via `LevelAgreement::getActiveTimeBetween`). Define the target
+    once in **Setup → Service levels**, reuse it across steps.
+
+  In both modes the warning threshold and breach action stay on the
+  step — including our `skip step` action, which GLPI's own SLA
+  escalation can't do. The OLA picker lists each OLA with its type
+  (TTR/TTO) and duration for clarity.
+
+  **Why hybrid rather than full reuse:** GLPI Service Levels are
+  ticket-scoped and single-slot (one TTR-OLA + one TTO-OLA per
+  ticket). Driving per-step deadlines through the ticket's OLA slot
+  would repurpose `internal_time_to_resolve` per step and mislead
+  GLPI's native SLA dashboards. The hybrid reuses GLPI's *definitions*
+  (and reporting of what the targets are) while keeping per-step
+  runtime tracking in the plugin — the one thing GLPI structurally
+  cannot represent.
+
+### Schema
+- `olas_id INT UNSIGNED NOT NULL DEFAULT 0` on
+  `glpi_plugin_tasksmanager_workflow_steps` (0 = custom duration).
+  Idempotent migration.
+
+### Notes
+- Steps sourced from an OLA show "SLA: <OLA name>" in the editor and
+  "SLA: Service Level" on the ticket step list; custom steps still
+  show the explicit duration.
+
+## [1.8.0] — 2026-05-29
+
+### Added
+- **Per-step SLA + escalation** — the headline feature of this release.
+  GLPI's native SLA is ticket-wide only; this adds a deadline to each
+  individual workflow **step**. No other GLPI plugin does this.
+
+  Each step can define:
+  - **Max duration** — how long the step may stay current (minutes /
+    hours / days). Leave at 0 to disable.
+  - **Warning threshold** — warn at N% of the budget (default 75%).
+  - **Breach action** — one of:
+    - `notify` — add a private followup to the ticket (GLPI's native
+      new-followup notification reaches the assigned team)
+    - `reassign` — swap the ticket's assigned group to an escalation
+      group (preserving requesters/observers)
+    - `skip` — auto-advance past the stuck step (honours conditional
+      routing)
+    - `priority_up` — raise the ticket priority one level (capped at
+      Very high)
+  - **Working-hours calendar** — optionally count only active time from
+    the entity's calendar, so the SLA clock pauses overnight / weekends
+    (uses `Calendar::getActiveTimeBetween`, same engine as GLPI's own
+    SLA).
+
+  A GLPI cron task (`GlpiPlugin\Tasksmanager\Sla::cronWorkflowSla`,
+  registered at 5-minute frequency, visible under **Setup → Automatic
+  actions**) sweeps every active workflow whose current step has an SLA,
+  fires the warning / breach exactly once per step instance, and logs
+  `step_sla_warning` / `step_sla_breached` audit events.
+
+- **SLA editor** under each step in the workflow builder (collapsible
+  "SLA" panel next to "Routing rules"): duration + unit, warning %,
+  breach action with a conditional escalation-group picker, and the
+  working-hours toggle. Autosaves via the new `save_step_sla` AJAX
+  action.
+
+- **SLA indicators** on the ticket's Workflow tab:
+  - The step list shows an SLA badge per step (the budget for inactive
+    steps; live **on-track / SLA warning / SLA breached** state for the
+    current step).
+  - The History card renders `step_sla_warning` / `step_sla_breached`
+    events with elapsed-vs-budget timing and the action taken.
+
+### Schema
+- Six new columns on `glpi_plugin_tasksmanager_workflow_steps`
+  (idempotent migration): `sla_duration`, `sla_warning_pct`,
+  `sla_breach_action`, `sla_breach_groups_id`, `sla_breach_users_id`,
+  `sla_use_calendar`.
+
+### Notes
+- Dedup uses the audit log keyed on the current step's start time, so a
+  step **Restart** (fresh task, later start) is treated as a new
+  instance and can warn / breach again — while a still-running step
+  won't re-fire every 5 minutes.
+- The cron is removed on plugin uninstall (`CronTask::unregister`).
+
 ## [1.7.3] — 2026-05-28
 
 ### Changed

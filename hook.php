@@ -134,6 +134,13 @@ function plugin_tasksmanager_install(): bool
             `description`           TEXT         NULL,
             `next_step_rules`       TEXT         NULL,
             `default_goto_step_id`  INT          NOT NULL DEFAULT 0,
+            `sla_duration`          INT          NULL DEFAULT NULL,
+            `sla_warning_pct`       TINYINT UNSIGNED NULL DEFAULT 75,
+            `sla_breach_action`     VARCHAR(20)  NOT NULL DEFAULT 'notify',
+            `sla_breach_groups_id`  INT UNSIGNED NOT NULL DEFAULT 0,
+            `sla_breach_users_id`   INT UNSIGNED NOT NULL DEFAULT 0,
+            `sla_use_calendar`      TINYINT      NOT NULL DEFAULT 0,
+            `olas_id`               INT UNSIGNED NOT NULL DEFAULT 0,
             `date_creation`         TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (`id`),
             KEY `workflows_id`  (`workflows_id`),
@@ -158,6 +165,28 @@ function plugin_tasksmanager_install(): bool
         if (!$DB->fieldExists('glpi_plugin_tasksmanager_workflow_steps', 'default_goto_step_id')) {
             $DB->doQuery("ALTER TABLE `glpi_plugin_tasksmanager_workflow_steps`
                 ADD `default_goto_step_id` INT NOT NULL DEFAULT 0 AFTER `next_step_rules`");
+        }
+        // 1.8.0: per-step SLA + escalation.
+        //   sla_duration       = max seconds the step may stay current
+        //                        (NULL = no SLA on this step)
+        //   sla_warning_pct    = warn at N% of the budget (NULL/0 = no warning)
+        //   sla_breach_action  = notify | reassign | skip | priority_up
+        //   sla_breach_groups_id / sla_breach_users_id = reassign targets
+        //   sla_use_calendar   = honour the entity's working-hours calendar
+        if (!$DB->fieldExists('glpi_plugin_tasksmanager_workflow_steps', 'sla_duration')) {
+            $DB->doQuery("ALTER TABLE `glpi_plugin_tasksmanager_workflow_steps`
+                ADD `sla_duration`         INT          NULL DEFAULT NULL  AFTER `default_goto_step_id`,
+                ADD `sla_warning_pct`      TINYINT UNSIGNED NULL DEFAULT 75 AFTER `sla_duration`,
+                ADD `sla_breach_action`    VARCHAR(20)  NOT NULL DEFAULT 'notify' AFTER `sla_warning_pct`,
+                ADD `sla_breach_groups_id` INT UNSIGNED NOT NULL DEFAULT 0  AFTER `sla_breach_action`,
+                ADD `sla_breach_users_id`  INT UNSIGNED NOT NULL DEFAULT 0  AFTER `sla_breach_groups_id`,
+                ADD `sla_use_calendar`     TINYINT      NOT NULL DEFAULT 0  AFTER `sla_breach_users_id`");
+        }
+        // 1.8.1: optionally source the step's SLA budget + calendar from an
+        // existing GLPI OLA instead of the custom sla_duration. 0 = custom.
+        if (!$DB->fieldExists('glpi_plugin_tasksmanager_workflow_steps', 'olas_id')) {
+            $DB->doQuery("ALTER TABLE `glpi_plugin_tasksmanager_workflow_steps`
+                ADD `olas_id` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `sla_use_calendar`");
         }
     }
 
@@ -231,6 +260,19 @@ function plugin_tasksmanager_install(): bool
     // Register plugin rights and grant them to super-admin
     \GlpiPlugin\Tasksmanager\Profile::install();
 
+    // Register the per-step SLA cron (5-min sweep). Idempotent —
+    // CronTask::register no-ops if the task already exists.
+    \CronTask::register(
+        \GlpiPlugin\Tasksmanager\Sla::class,
+        'WorkflowSla',
+        \GlpiPlugin\Tasksmanager\Sla::CRON_FREQUENCY,
+        [
+            'state'    => \CronTask::STATE_WAITING,
+            'mode'     => \CronTask::MODE_EXTERNAL,
+            'comment'  => 'Tasks Manager per-step SLA & escalation',
+        ]
+    );
+
     return true;
 }
 
@@ -266,6 +308,9 @@ function plugin_tasksmanager_uninstall(): bool
 
     // Drop plugin rights from every profile
     \GlpiPlugin\Tasksmanager\Profile::uninstall();
+
+    // Remove our cron task(s) — matches GlpiPlugin\Tasksmanager\* itemtypes.
+    \CronTask::unregister('Tasksmanager');
 
     return true;
 }

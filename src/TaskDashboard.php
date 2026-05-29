@@ -71,7 +71,7 @@ class TaskDashboard extends CommonGLPI
             // the array key. We need positional 0..N-1 indices for "step N/total",
             // so re-key with array_values().
             $all_steps = array_values(iterator_to_array($DB->request([
-                'SELECT'    => ['wfs.id', 'wfs.step_order', 'tt.name AS tpl_name'],
+                'SELECT'    => ['wfs.id', 'wfs.step_order', 'wfs.sla_duration', 'wfs.olas_id', 'tt.name AS tpl_name'],
                 'FROM'      => 'glpi_plugin_tasksmanager_workflow_steps AS wfs',
                 'LEFT JOIN' => [
                     'glpi_tasktemplates AS tt' => ['ON' => ['wfs' => 'tasktemplates_id', 'tt' => 'id']],
@@ -158,6 +158,27 @@ class TaskDashboard extends CommonGLPI
                 $started_step_orders[(int)$row['workflow_step_order']] = true;
             }
 
+            // Live SLA state of the current step (for the badge): latest SLA
+            // event for this workflow instance + current step.
+            $cur_sla_state = null; // null | 'warning' | 'breached'
+            if ($DB->tableExists('glpi_plugin_tasksmanager_workflow_events')) {
+                $sla_ev = $DB->request([
+                    'SELECT' => ['event_type'],
+                    'FROM'   => 'glpi_plugin_tasksmanager_workflow_events',
+                    'WHERE'  => [
+                        'ticket_workflows_id' => (int)$tw['id'],
+                        'step_order'          => (int)$tw['current_step'],
+                        'event_type'          => ['step_sla_warning', 'step_sla_breached'],
+                    ],
+                    'ORDER'  => ['date_creation DESC', 'id DESC'],
+                    'LIMIT'  => 1,
+                ]);
+                if (count($sla_ev) > 0) {
+                    $cur_sla_state = $sla_ev->current()['event_type'] === 'step_sla_breached'
+                        ? 'breached' : 'warning';
+                }
+            }
+
             // Step list overview
             echo '<table class="table table-sm mt-3">';
             echo '<thead class="table-light"><tr>';
@@ -170,6 +191,9 @@ class TaskDashboard extends CommonGLPI
                 $active  = ($order === $cur);
                 $past    = ($order <  $cur);
                 $started = !empty($started_step_orders[$order]);
+                $sla_dur = (int)($s['sla_duration'] ?? 0);
+                $sla_ola = (int)($s['olas_id'] ?? 0);
+                $has_sla = ($sla_dur > 0 || $sla_ola > 0);
 
                 echo '<tr' . ($active ? ' class="table-primary"' : '') . '>';
                 echo '<td>' . $num . '</td>';
@@ -186,6 +210,34 @@ class TaskDashboard extends CommonGLPI
                 } else {
                     echo '<span class="badge bg-secondary text-white">' . __('Pending') . '</span>';
                 }
+
+                // SLA badge — only for steps that have an SLA configured
+                // (custom duration OR a referenced GLPI Service Level).
+                if ($has_sla) {
+                    // Label: explicit duration for custom; "Service Level"
+                    // for OLA-sourced (budget lives in the OLA definition).
+                    $sla_lbl = $sla_dur > 0
+                        ? Html::timestampToString($sla_dur, false)
+                        : __('Service Level', 'tasksmanager');
+
+                    if ($active && $cur_sla_state === 'breached') {
+                        echo ' <span class="badge bg-danger text-white"><i class="ti ti-alarm-filled me-1"></i>'
+                            . __('SLA breached', 'tasksmanager') . '</span>';
+                    } elseif ($active && $cur_sla_state === 'warning') {
+                        echo ' <span class="badge bg-warning text-dark"><i class="ti ti-alarm me-1"></i>'
+                            . __('SLA warning', 'tasksmanager') . '</span>';
+                    } elseif ($active) {
+                        echo ' <span class="badge bg-success-lt"><i class="ti ti-alarm me-1"></i>'
+                            . sprintf(__('SLA %s', 'tasksmanager'), $sla_lbl)
+                            . '</span>';
+                    } else {
+                        echo ' <span class="badge bg-secondary-lt" title="'
+                            . htmlspecialchars(__('SLA budget for this step', 'tasksmanager')) . '">'
+                            . '<i class="ti ti-alarm me-1"></i>'
+                            . htmlspecialchars($sla_lbl) . '</span>';
+                    }
+                }
+
                 echo '</td></tr>';
             }
             echo '</tbody></table>';
@@ -511,6 +563,8 @@ class TaskDashboard extends CommonGLPI
             'step_routed'                => ['ti-route',              __('Step routed',              'tasksmanager')],
             'step_skipped'               => ['ti-player-track-next',  __('Step skipped',             'tasksmanager')],
             'step_restarted'             => ['ti-refresh',            __('Step restarted',           'tasksmanager')],
+            'step_sla_warning'           => ['ti-alarm',              __('SLA warning',              'tasksmanager')],
+            'step_sla_breached'          => ['ti-alarm-filled',       __('SLA breached',             'tasksmanager')],
             'workflow_completed'         => ['ti-circle-check',       __('Workflow completed',       'tasksmanager')],
             'workflow_removed'           => ['ti-x',                  __('Workflow removed',         'tasksmanager')],
         ];
@@ -595,6 +649,30 @@ class TaskDashboard extends CommonGLPI
                             . (mb_strlen($keys_str) > 500 ? '…' : '')
                             . '</div>';
                     }
+                }
+            }
+
+            // For SLA events, surface elapsed vs budget (+ action on breach).
+            if (in_array($type, ['step_sla_warning', 'step_sla_breached'], true)
+                && !empty($ev['details'])
+            ) {
+                $det = json_decode($ev['details'], true);
+                if (is_array($det)) {
+                    $elapsed  = (int)($det['elapsed_seconds'] ?? 0);
+                    $budget   = (int)($det['sla_duration'] ?? 0);
+                    $extra .= ' <span class="text-muted small">— '
+                        . sprintf(
+                            __('%1$s elapsed of %2$s', 'tasksmanager'),
+                            Html::timestampToString($elapsed, true),
+                            Html::timestampToString($budget, true)
+                        );
+                    if ($type === 'step_sla_breached' && !empty($det['breach_action'])) {
+                        $extra .= ', ' . sprintf(
+                            __('action: %s', 'tasksmanager'),
+                            htmlspecialchars((string)$det['breach_action'])
+                        );
+                    }
+                    $extra .= '</span>';
                 }
             }
 
