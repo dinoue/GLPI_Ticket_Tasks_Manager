@@ -3,6 +3,77 @@
 All notable changes to **Tasks Manager** are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.10.1] — 2026-05-29
+
+### Changed
+- **Workflow tasks now keep their template's task state** instead of
+  being forced to "To do". Since 1.3.2 every workflow-created task was
+  hard-coded to state 1 so a checkbox always appeared; templates set to
+  **Information** or **Done** silently came out as "To do" and required
+  a pointless tick. The template's state is now preserved (0 =
+  Information, 1 = To do, 2 = Done).
+
+- **Non-blocking steps.** A consequence handled deliberately: tasks in
+  the Information or Done state have no actionable checkbox, so such a
+  step could never be completed by a user and would stall the workflow
+  forever. Steps whose template state is not "To do" are therefore
+  treated as **non-blocking**: the task is posted on the ticket and the
+  workflow advances immediately — through routing rules, the
+  else/default target, SLA setup, and completion handling, exactly as
+  if a user had ticked it. Several non-blocking steps in a row chain in
+  one pass (termination guaranteed by the forward-only routing guard).
+  Use cases: "post these instructions mid-workflow and continue",
+  "record a canned checklist as already done".
+
+- The plugin's own taskstate tracking marks non-blocking tasks
+  `done` / 100% at creation so dashboards don't show them as pending
+  forever.
+
+### Internal
+- The advance/complete logic that lived in the `ITEM_UPDATE` hook moved
+  into `Workflow::advanceFrom()` + `Workflow::completeWorkflow()` so
+  the hook, non-blocking chains, apply, skip and restart all advance
+  through one code path. No behaviour change for "To do" steps.
+
+## [1.10.0] — 2026-05-29
+
+### Added
+- **Per-step answer template (ITILFollowupTemplate).** Each workflow
+  step can now optionally point at an existing GLPI
+  `ITILFollowupTemplate`. When the step starts, the engine auto-creates
+  an `ITILFollowup` on the ticket using the template's content,
+  `is_private`, `requesttypes_id` and `pendingreasons_id` — same fields
+  GLPI uses when a tech picks a template from the timeline by hand.
+  Use case: send a standard status update to the requester at each
+  step transition (e.g. "Step 2 started — the Windows team is now
+  configuring your VM"). The followup shows up in the timeline like
+  any other answer and triggers GLPI's native new-followup notification.
+
+  Pairs naturally with the existing TaskTemplate per step:
+  - **TaskTemplate** → who works on the step (creates the task)
+  - **ITILFollowupTemplate** → what the requester sees (creates the answer)
+
+- Step's "answer template" is set inline in the workflow editor via a
+  new dropdown under each step card. Autosaves via the new
+  `update_step_followup_template` AJAX action.
+
+- The `step_started` audit event now carries
+  `itilfollowuptemplates_id` and the resulting `itilfollowups_id` in
+  its details, so you can trace which template fired (and whether the
+  followup creation succeeded) per step instance.
+
+### Schema
+- `itilfollowuptemplates_id INT UNSIGNED NOT NULL DEFAULT 0` on
+  `glpi_plugin_tasksmanager_workflow_steps` (0 = no auto-followup).
+  Idempotent migration.
+
+### Notes
+- Best-effort: if the template was deleted or the followup creation
+  throws, the step still applies successfully — the audit log records
+  `itilfollowups_id = 0` for that case.
+- Empty templates (no content) are skipped — we don't post blank
+  followups.
+
 ## [1.9.0] — 2026-05-29
 
 ### Added

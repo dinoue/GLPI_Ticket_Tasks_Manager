@@ -141,6 +141,7 @@ function plugin_tasksmanager_install(): bool
             `sla_breach_users_id`   INT UNSIGNED NOT NULL DEFAULT 0,
             `sla_use_calendar`      TINYINT      NOT NULL DEFAULT 0,
             `olas_id`               INT UNSIGNED NOT NULL DEFAULT 0,
+            `itilfollowuptemplates_id` INT UNSIGNED NOT NULL DEFAULT 0,
             `date_creation`         TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (`id`),
             KEY `workflows_id`  (`workflows_id`),
@@ -187,6 +188,14 @@ function plugin_tasksmanager_install(): bool
         if (!$DB->fieldExists('glpi_plugin_tasksmanager_workflow_steps', 'olas_id')) {
             $DB->doQuery("ALTER TABLE `glpi_plugin_tasksmanager_workflow_steps`
                 ADD `olas_id` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `sla_use_calendar`");
+        }
+        // 1.10.0: optional ITILFollowupTemplate ("answer template") that
+        // auto-creates a templated followup on the ticket when the step
+        // starts — paired with the existing TaskTemplate-driven task
+        // creation. 0 = no answer.
+        if (!$DB->fieldExists('glpi_plugin_tasksmanager_workflow_steps', 'itilfollowuptemplates_id')) {
+            $DB->doQuery("ALTER TABLE `glpi_plugin_tasksmanager_workflow_steps`
+                ADD `itilfollowuptemplates_id` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `olas_id`");
         }
     }
 
@@ -653,110 +662,19 @@ function plugin_tasksmanager_item_update(TicketTask $item): void
         return;
     }
 
-    // Find the next step — honour conditional routing rules on the current
-    // step (1.5.0+). Falls back to the sequentially next step when no rule
-    // matches or no rules are configured. The trace captures the decision
-    // path for audit logging so you can see *why* a particular step ran.
-    $routing_trace = [];
-    $next_step = \GlpiPlugin\Tasksmanager\Workflow::resolveNextStep(
-        $workflows_id,
-        $current_step_order,
-        $tickets_id,
-        $routing_trace
-    );
-
-    \GlpiPlugin\Tasksmanager\Workflow::logEvent(
-        'step_routed',
-        $tickets_id,
-        $workflows_id,
+    // Advance: resolve the next step (routing rules + else/default target),
+    // apply it, or complete the workflow. This logic lives in
+    // Workflow::advanceFrom since 1.10.1 so that non-blocking steps
+    // (Information / Done task templates — nothing for a human to tick)
+    // can chain through the exact same path, including the completion
+    // handling (status, completion group, refresh header, audit event)
+    // that used to be inlined here.
+    \GlpiPlugin\Tasksmanager\Workflow::advanceFrom(
         $ticket_workflows_id,
-        $current_step_order,
-        $routing_trace
+        $tickets_id,
+        $workflows_id,
+        $current_step_order
     );
-
-    if ($next_step === null) {
-        // All steps done — mark workflow complete.
-        $DB->update(
-            'glpi_plugin_tasksmanager_ticket_workflows',
-            ['status' => 'completed'],
-            ['id' => $ticket_workflows_id]
-        );
-
-        // Look up the parent workflow for its optional completion group +
-        // suggested solution template id (logged so the History card can
-        // surface what was offered even after the suggestion banner is
-        // dismissed).
-        $completion_group     = 0;
-        $solutiontemplates_id = 0;
-        $solutiontemplate_name = '';
-        $wf_iter = $DB->request([
-            'FROM'  => 'glpi_plugin_tasksmanager_workflows',
-            'WHERE' => ['id' => $workflows_id],
-            'LIMIT' => 1,
-        ]);
-        if (count($wf_iter) > 0) {
-            $wf                   = $wf_iter->current();
-            $completion_group     = (int)($wf['groups_id_completion']  ?? 0);
-            $solutiontemplates_id = (int)($wf['solutiontemplates_id']  ?? 0);
-            if ($completion_group > 0) {
-                \GlpiPlugin\Tasksmanager\Workflow::swapAssignActors(
-                    $tickets_id,
-                    0,
-                    $completion_group
-                );
-            }
-            // Resolve the template name for the auto-open header so the
-            // browser can show it without an extra round-trip.
-            if ($solutiontemplates_id > 0) {
-                $st_iter = $DB->request([
-                    'SELECT' => ['name'],
-                    'FROM'   => 'glpi_solutiontemplates',
-                    'WHERE'  => ['id' => $solutiontemplates_id],
-                    'LIMIT'  => 1,
-                ]);
-                if (count($st_iter) > 0) {
-                    $solutiontemplate_name = (string)($st_iter->current()['name'] ?? '');
-                }
-            }
-        }
-
-        // Signal the browser to reload. Without this, workflow-refresh.js
-        // won't fire and the user sits on the stale "step N in progress"
-        // view, missing the completion banner + the "Recommended
-        // solution" button rendered into the timeline footer via
-        // TIMELINE_ACTIONS. Emitted unconditionally on every workflow
-        // completion (regardless of completion-group config) so the
-        // refresh is reliable.
-        if (!headers_sent()) {
-            header('X-TM-Workflow-Advanced: 1');
-        }
-        // Note: $solutiontemplate_name is still resolved above so we can
-        // log it in the audit details; the actual surfacing happens via
-        // plugin_tasksmanager_timeline_actions() on the next page load.
-        unset($solutiontemplate_name);
-
-        \GlpiPlugin\Tasksmanager\Workflow::logEvent(
-            'workflow_completed',
-            $tickets_id,
-            $workflows_id,
-            $ticket_workflows_id,
-            $current_step_order,
-            [
-                'completion_group'     => $completion_group,
-                'solutiontemplates_id' => $solutiontemplates_id,
-            ]
-        );
-        return;
-    }
-
-    // Only advance current_step if the task was actually created
-    if (plugin_tasksmanager_apply_workflow_step($tickets_id, $next_step, $ticket_workflows_id)) {
-        $DB->update(
-            'glpi_plugin_tasksmanager_ticket_workflows',
-            ['current_step' => $next_step['step_order']],
-            ['id' => $ticket_workflows_id]
-        );
-    }
 }
 
 /**

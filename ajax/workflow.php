@@ -20,6 +20,7 @@
  *   update_template_comment   – update the linked task template's comment
  *   save_step_rules           – persist the JSON conditional-routing rules for a step
  *   save_step_sla             – persist per-step SLA + escalation config
+ *   update_step_followup_template – set/clear the step's ITILFollowupTemplate
  *   list_form_questions       – return [{id,label}] of all defined form questions
  *   apply_to_ticket           – assign a workflow to a ticket and create its first task
  *   remove_from_ticket        – cancel the active workflow on a ticket
@@ -235,6 +236,41 @@ switch ($action) {
             ['id' => $step_id]
         );
         tm_respond(true, 200, null, ['sla_duration' => $duration, 'olas_id' => $olas_id]);
+
+    // ── Set / clear the per-step ITILFollowupTemplate ─────────────────────
+    // Body:
+    //   step_id                  : int
+    //   itilfollowuptemplates_id : int (0 = clear)
+    case 'update_step_followup_template':
+        Session::checkRight('plugin_tasksmanager_workflows', UPDATE);
+
+        $step_id = (int)($_POST['step_id'] ?? 0);
+        $fup_id  = (int)($_POST['itilfollowuptemplates_id'] ?? 0);
+        if ($fup_id < 0) { $fup_id = 0; }
+        if (!$step_id) {
+            tm_respond(false, 400, 'Missing step_id');
+        }
+
+        // Light existence check when a non-zero template id is set, so the
+        // editor catches stale references early rather than failing
+        // silently at apply time.
+        if ($fup_id > 0) {
+            $exists = $DB->request([
+                'COUNT' => 'c',
+                'FROM'  => 'glpi_itilfollowuptemplates',
+                'WHERE' => ['id' => $fup_id],
+            ])->current()['c'] ?? 0;
+            if ((int)$exists === 0) {
+                tm_respond(false, 404, 'ITILFollowupTemplate not found');
+            }
+        }
+
+        $DB->update(
+            'glpi_plugin_tasksmanager_workflow_steps',
+            ['itilfollowuptemplates_id' => $fup_id],
+            ['id' => $step_id]
+        );
+        tm_respond(true, 200, null, ['itilfollowuptemplates_id' => $fup_id]);
 
     // ── List form questions (for the rule-field dropdown) ────────────────
     // Returns [{id, label, form_name}] — used to populate the field picker

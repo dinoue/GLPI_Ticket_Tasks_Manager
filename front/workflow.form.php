@@ -80,6 +80,7 @@ if (!$is_new) {
             'wfs.sla_duration', 'wfs.sla_warning_pct', 'wfs.sla_breach_action',
             'wfs.sla_breach_groups_id', 'wfs.sla_breach_users_id', 'wfs.sla_use_calendar',
             'wfs.olas_id',
+            'wfs.itilfollowuptemplates_id',
             'tt.name AS tpl_name',
             'tt.comment AS tpl_comment',
         ],
@@ -127,6 +128,19 @@ foreach ($DB->request([
     'ORDER'  => ['name ASC'],
 ]) as $g) {
     $assign_groups[] = ['id' => (int)$g['id'], 'name' => (string)$g['name']];
+}
+
+// ITILFollowupTemplate list for the per-step "answer template" picker.
+// Used to drop a templated followup on the ticket when the step starts.
+$fup_templates = [];
+if ($DB->tableExists('glpi_itilfollowuptemplates')) {
+    foreach ($DB->request([
+        'SELECT' => ['id', 'name'],
+        'FROM'   => 'glpi_itilfollowuptemplates',
+        'ORDER'  => ['name ASC'],
+    ]) as $t) {
+        $fup_templates[] = ['id' => (int)$t['id'], 'name' => (string)$t['name']];
+    }
 }
 
 // GLPI OLAs (operational level agreements) for the "Duration source =
@@ -217,6 +231,26 @@ ob_start();
 </div>
 <?php
 $sla_block_html = ob_get_clean();
+
+// Per-step ITILFollowupTemplate picker — sibling of the SLA block, reused
+// by both PHP-rendered existing steps and the JS add-template. Inline (no
+// collapse) because it's a single dropdown.
+ob_start();
+?>
+<div class="d-flex flex-wrap gap-1 align-items-center mt-2 pt-2 border-top">
+    <span class="small text-muted"><i class="ti ti-message-circle me-1"></i><?= __('Answer template', 'tasksmanager') ?></span>
+    <select class="form-select form-select-sm tm-fup-tpl" style="max-width:260px"
+            onchange="tmSaveFupTpl(this)">
+        <!-- options populated by JS from TM_FUP_TEMPLATES -->
+    </select>
+    <span class="tm-fup-status text-muted small ms-2"></span>
+    <div class="text-muted small w-100">
+        <i class="ti ti-info-circle me-1"></i>
+        <?= __('Optional. When set, an ITILFollowup is auto-created on the ticket with this template\'s content each time the step starts — for example to send a standard status update to the requester.', 'tasksmanager') ?>
+    </div>
+</div>
+<?php
+$fup_block_html = ob_get_clean();
 
 $ajax_url = Plugin::getWebDir('tasksmanager') . '/ajax/workflow.php';
 
@@ -363,7 +397,8 @@ global $CFG_GLPI;
                          data-tasktemplates-id="<?= (int)$step['tasktemplates_id'] ?>"
                          data-rules='<?= htmlspecialchars(json_encode($rules_decoded ?: []), ENT_QUOTES) ?>'
                          data-default-goto="<?= (int)($step['default_goto_step_id'] ?? 0) ?>"
-                         data-sla='<?= htmlspecialchars(json_encode($sla_cfg), ENT_QUOTES) ?>'>
+                         data-sla='<?= htmlspecialchars(json_encode($sla_cfg), ENT_QUOTES) ?>'
+                         data-followup-tpl="<?= (int)($step['itilfollowuptemplates_id'] ?? 0) ?>">
                         <div class="tm-flow-card">
                             <div class="tm-flow-handle" title="<?= __('Drag to reorder', 'tasksmanager') ?>">
                                 <i class="ti ti-grip-vertical"></i>
@@ -440,6 +475,7 @@ global $CFG_GLPI;
                                     </div>
                                 </div>
                                 <?= $sla_block_html ?>
+                                <?= $fup_block_html ?>
                             </div>
                             <div class="tm-flow-actions">
                                 <button type="button" class="btn btn-sm btn-outline-danger px-1"
@@ -492,8 +528,10 @@ global $CFG_GLPI;
     // SLA panel markup (shared by existing + newly-added steps) and the
     // assignable-groups list for the "reassign on breach" picker.
     const SLA_BLOCK_HTML    = <?= json_encode($sla_block_html) ?>;
+    const FUP_BLOCK_HTML    = <?= json_encode($fup_block_html) ?>;
     const TM_ASSIGN_GROUPS  = <?= json_encode($assign_groups) ?>;
     const TM_OLAS           = <?= json_encode($olas_list) ?>;
+    const TM_FUP_TEMPLATES  = <?= json_encode($fup_templates) ?>;
 
     // Cache of form questions for the rule-field dropdown. Lazily loaded
     // the first time a user opens "Routing rules" on any step.
@@ -562,6 +600,7 @@ global $CFG_GLPI;
                 stepDiv.dataset.rules = '[]';
                 stepDiv.dataset.defaultGoto = '0';
                 stepDiv.dataset.sla = JSON.stringify({duration:0, warning_pct:75, action:'notify', group:0, calendar:0, olas_id:0});
+                stepDiv.dataset.followupTpl = '0';
                 stepDiv.innerHTML = `
                     <div class="tm-flow-card">
                         <div class="tm-flow-handle" title="<?= __('Drag to reorder', 'tasksmanager') ?>">
@@ -611,6 +650,7 @@ global $CFG_GLPI;
                                 </div>
                             </div>
                             ${SLA_BLOCK_HTML}
+                            ${FUP_BLOCK_HTML}
                         </div>
                         <div class="tm-flow-actions">
                             <button type="button" class="btn btn-sm btn-outline-danger px-1"
@@ -621,6 +661,8 @@ global $CFG_GLPI;
                     </div>
                     <div class="tm-flow-connector"><i class="ti ti-chevron-down"></i></div>`;
                 flow.appendChild(stepDiv);
+                // Populate the answer-template dropdown on the new card.
+                populateFupTpl(stepDiv);
 
                 renumber();
                 sel.value = '';
@@ -1173,6 +1215,56 @@ global $CFG_GLPI;
     // Paint the SLA summary label on every step at load (so the toggle
     // shows "SLA: 4 hours" without needing to open the panel first).
     document.querySelectorAll('#tm-flow .tm-flow-step').forEach(updateSlaLabel);
+
+    // ── Per-step ITILFollowupTemplate ("answer template") picker ─────────────
+    //
+    // Populate the dropdown once per step (cheap — same options for every
+    // step) and bind the change handler. Stored value comes from the
+    // `data-followup-tpl` attribute that PHP rendered, OR the JS default
+    // ('0') for newly-added steps.
+
+    function fupTemplateOptionsHtml(selectedId) {
+        let html = `<option value="0">${'<?= __('-- No answer template --', 'tasksmanager') ?>'}</option>`;
+        TM_FUP_TEMPLATES.forEach(t => {
+            const sel = (t.id === parseInt(selectedId, 10)) ? ' selected' : '';
+            html += `<option value="${t.id}"${sel}>${escHtml(t.name)}</option>`;
+        });
+        return html;
+    }
+
+    function populateFupTpl(stepDiv) {
+        const sel = stepDiv.querySelector('.tm-fup-tpl');
+        if (!sel) return;
+        if (sel.dataset.tmFilled) return; // populate once per element
+        const current = stepDiv.dataset.followupTpl || '0';
+        sel.innerHTML = fupTemplateOptionsHtml(current);
+        sel.dataset.tmFilled = '1';
+    }
+
+    window.tmSaveFupTpl = function (el) {
+        const stepDiv = el.closest('.tm-flow-step');
+        if (!stepDiv) return;
+        const status  = stepDiv.querySelector('.tm-fup-status');
+        const tplId   = parseInt(el.value, 10) || 0;
+        if (status) status.textContent = '<?= __('Saving…', 'tasksmanager') ?>';
+        post({
+            action: 'update_step_followup_template',
+            step_id: stepDiv.dataset.stepId,
+            itilfollowuptemplates_id: tplId,
+        }).then(resp => {
+            if (!resp.ok) {
+                if (status) status.textContent = resp.error || 'Error';
+                return;
+            }
+            stepDiv.dataset.followupTpl = String(tplId);
+            if (status) {
+                status.textContent = '<?= __('Saved', 'tasksmanager') ?>';
+                setTimeout(() => { if (status) status.textContent = ''; }, 1500);
+            }
+        });
+    };
+
+    document.querySelectorAll('#tm-flow .tm-flow-step').forEach(populateFupTpl);
 
     // ── SortableJS drag-reorder ──────────────────────────────────────────────
     // GLPI 11 ships SortableJS at public/lib/sortablejs.js (loaded by the

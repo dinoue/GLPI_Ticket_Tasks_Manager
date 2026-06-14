@@ -167,6 +167,11 @@ class Workflow extends CommonDBTM
             ['step_id' => (int)$first_step['id']]
         );
 
+        // First step may be non-blocking (Information / Done template) —
+        // advance past it right away rather than stalling on a task that
+        // has no checkbox.
+        self::chainIfNonBlocking($first_step, $ticket_workflows_id, $tickets_id, $workflows_id);
+
         return true;
     }
 
@@ -191,11 +196,24 @@ class Workflow extends CommonDBTM
             $content = $template->fields['name'] ?? __('Task', 'tasksmanager');
         }
 
+        // Respect the template's task state instead of forcing "To do".
+        //   0 = Information, 1 = To do, 2 = Done.
+        // (1.3.2 used to force state 1 so tasks always showed a checkbox;
+        // since 1.9.1 the state is preserved and non-To-do steps become
+        // NON-BLOCKING: an Information/Done task has no actionable
+        // checkbox, so the workflow advances past it immediately after
+        // creation — see the chaining in advanceFrom() and the
+        // chainIfNonBlocking() calls at every applyStep call site.)
+        $task_state = (int)($template->fields['state'] ?? 1);
+        if (!in_array($task_state, [0, 1, 2], true)) {
+            $task_state = 1;
+        }
+
         $input = [
             'tickets_id'  => $tickets_id,
             'content'     => $content,
             'name'        => $template->fields['name'] ?? '',
-            'state'       => 1,
+            'state'       => $task_state,
             'is_private'  => (int)($template->fields['is_private'] ?? 0),
             'actiontime'  => (int)($template->fields['actiontime'] ?? 0),
         ];
@@ -238,12 +256,20 @@ class Workflow extends CommonDBTM
             return false;
         }
 
+        $ts_update = [
+            'ticket_workflows_id' => $ticket_workflows_id,
+            'workflow_step_order' => (int)$step['step_order'],
+        ];
+        if ($task_state !== 1) {
+            // Non-blocking task (Information / already-Done) — nobody will
+            // ever tick it, so reflect that in our own tracking too;
+            // otherwise dashboards would show it as pending forever.
+            $ts_update['plugin_status'] = 'done';
+            $ts_update['progress']      = 100;
+        }
         $DB->update(
             'glpi_plugin_tasksmanager_taskstates',
-            [
-                'ticket_workflows_id' => $ticket_workflows_id,
-                'workflow_step_order' => (int)$step['step_order'],
-            ],
+            $ts_update,
             ['tickettasks_id' => $new_task_id]
         );
 
@@ -254,6 +280,17 @@ class Workflow extends CommonDBTM
         // edits or other timeline traffic.
         if (!headers_sent()) {
             header('X-TM-Workflow-Advanced: 1');
+        }
+
+        // Optional: also drop a templated ITILFollowup ("answer") on the
+        // ticket — same pattern as the TaskTemplate above, but for the
+        // followup timeline entry. Used to send standard status updates to
+        // the requester at step transitions (e.g. "Step 2 started: the
+        // Windows team is now configuring your VM").
+        $new_followup_id = 0;
+        $fup_template_id = (int)($step['itilfollowuptemplates_id'] ?? 0);
+        if ($fup_template_id > 0) {
+            $new_followup_id = self::applyFollowupTemplate($tickets_id, $fup_template_id);
         }
 
         // Audit log
@@ -273,10 +310,12 @@ class Workflow extends CommonDBTM
             $ticket_workflows_id,
             (int)$step['step_order'],
             [
-                'tickettasks_id'    => $new_task_id,
-                'tasktemplates_id'  => (int)$step['tasktemplates_id'],
-                'users_id_tech'     => $tpl_user,
-                'groups_id_tech'    => $tpl_group,
+                'tickettasks_id'           => $new_task_id,
+                'tasktemplates_id'         => (int)$step['tasktemplates_id'],
+                'users_id_tech'            => $tpl_user,
+                'groups_id_tech'           => $tpl_group,
+                'itilfollowuptemplates_id' => $fup_template_id,
+                'itilfollowups_id'         => $new_followup_id,
             ]
         );
 
@@ -318,6 +357,156 @@ class Workflow extends CommonDBTM
             'details'             => $details ? json_encode($details) : null,
             'date_creation'       => date('Y-m-d H:i:s'),
         ]);
+    }
+
+    /**
+     * Advance the workflow one step from `$current_step_order`: resolve the
+     * next step (honouring routing rules + the else/default target), apply
+     * it, or complete the workflow when there is none. Logs the step_routed
+     * trace either way.
+     *
+     * If the step just instantiated is NON-BLOCKING (its template's task
+     * state is Information or Done — no actionable checkbox), recurses to
+     * keep advancing. Termination is guaranteed because routing is
+     * forward-only (resolveNextStep only ever returns a strictly greater
+     * step_order); the depth guard is belt-and-suspenders.
+     *
+     * @return bool false when the next step's task could not be created.
+     */
+    public static function advanceFrom(
+        int $ticket_workflows_id,
+        int $tickets_id,
+        int $workflows_id,
+        int $current_step_order,
+        int $depth = 0
+    ): bool {
+        global $DB;
+
+        if ($depth > 100) {
+            return false;
+        }
+
+        $trace = [];
+        $next  = self::resolveNextStep($workflows_id, $current_step_order, $tickets_id, $trace);
+        self::logEvent(
+            'step_routed',
+            $tickets_id,
+            $workflows_id,
+            $ticket_workflows_id,
+            $current_step_order,
+            $trace
+        );
+
+        if ($next === null) {
+            self::completeWorkflow($ticket_workflows_id, $tickets_id, $workflows_id, $current_step_order);
+            return true;
+        }
+
+        if (!self::applyStep($tickets_id, $next, $ticket_workflows_id)) {
+            return false;
+        }
+        // Update current_step BEFORE any chaining so a recursive advance
+        // never regresses the pointer.
+        $DB->update(
+            'glpi_plugin_tasksmanager_ticket_workflows',
+            ['current_step' => (int)$next['step_order']],
+            ['id' => $ticket_workflows_id]
+        );
+
+        // Keep going past non-blocking steps.
+        $template = new \TaskTemplate();
+        if ($template->getFromDB((int)$next['tasktemplates_id'])) {
+            $state = (int)($template->fields['state'] ?? 1);
+            if ($state !== 1) {
+                return self::advanceFrom(
+                    $ticket_workflows_id,
+                    $tickets_id,
+                    $workflows_id,
+                    (int)$next['step_order'],
+                    $depth + 1
+                );
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Mark a workflow instance completed: status update, optional
+     * completion-group reassignment, browser-refresh header, audit event.
+     * (Extracted from the ITEM_UPDATE hook so non-blocking step chains can
+     * complete a workflow through the same path.)
+     */
+    public static function completeWorkflow(
+        int $ticket_workflows_id,
+        int $tickets_id,
+        int $workflows_id,
+        int $final_step_order
+    ): void {
+        global $DB;
+
+        $DB->update(
+            'glpi_plugin_tasksmanager_ticket_workflows',
+            ['status' => 'completed'],
+            ['id' => $ticket_workflows_id]
+        );
+
+        $completion_group     = 0;
+        $solutiontemplates_id = 0;
+        $wf_iter = $DB->request([
+            'FROM'  => 'glpi_plugin_tasksmanager_workflows',
+            'WHERE' => ['id' => $workflows_id],
+            'LIMIT' => 1,
+        ]);
+        if (count($wf_iter) > 0) {
+            $wf                   = $wf_iter->current();
+            $completion_group     = (int)($wf['groups_id_completion'] ?? 0);
+            $solutiontemplates_id = (int)($wf['solutiontemplates_id'] ?? 0);
+            if ($completion_group > 0) {
+                self::swapAssignActors($tickets_id, 0, $completion_group);
+            }
+        }
+
+        // Signal the browser to reload so the user sees the completion
+        // banner + the "Recommended solution" button instead of the stale
+        // "step N in progress" view.
+        if (!headers_sent()) {
+            header('X-TM-Workflow-Advanced: 1');
+        }
+
+        self::logEvent(
+            'workflow_completed',
+            $tickets_id,
+            $workflows_id,
+            $ticket_workflows_id,
+            $final_step_order,
+            [
+                'completion_group'     => $completion_group,
+                'solutiontemplates_id' => $solutiontemplates_id,
+            ]
+        );
+    }
+
+    /**
+     * If the step's template creates a non-blocking task (state Information
+     * or Done — nothing for a human to tick), advance the workflow past it
+     * immediately. Used by the applyStep call sites that sit outside
+     * advanceFrom (first step on apply, skip, restart).
+     */
+    private static function chainIfNonBlocking(
+        array $step,
+        int $ticket_workflows_id,
+        int $tickets_id,
+        int $workflows_id
+    ): void {
+        $template = new \TaskTemplate();
+        if (!$template->getFromDB((int)$step['tasktemplates_id'])) {
+            return;
+        }
+        $state = (int)($template->fields['state'] ?? 1);
+        if ($state === 1) {
+            return; // "To do" blocks until a human checks the box.
+        }
+        self::advanceFrom($ticket_workflows_id, $tickets_id, $workflows_id, (int)$step['step_order']);
     }
 
     /**
@@ -772,6 +961,11 @@ class Workflow extends CommonDBTM
                 ['advanced_to' => (int)$next_step['step_order']]
             );
 
+            // Landed on a non-blocking step? Keep advancing. (Safe inside
+            // the suppress flag — chaining is our own code path, not the
+            // ITEM_UPDATE hook the flag gates.)
+            self::chainIfNonBlocking($next_step, $ticket_workflows_id, $tickets_id, $workflows_id);
+
             return true;
         } finally {
             self::$suppressAutoAdvance = false;
@@ -830,6 +1024,9 @@ class Workflow extends CommonDBTM
                 $ticket_workflows_id,
                 $current_step_order
             );
+
+            // Restarting a non-blocking step re-posts its task and moves on.
+            self::chainIfNonBlocking($step, $ticket_workflows_id, $tickets_id, $workflows_id);
 
             return true;
         } finally {
@@ -1046,5 +1243,57 @@ class Workflow extends CommonDBTM
             'id'      => $tickets_id,
             '_actors' => $actors,
         ]);
+    }
+
+    /**
+     * Instantiate an ITILFollowup on the ticket from an
+     * ITILFollowupTemplate. Returns the new followup id, or 0 on failure.
+     *
+     * Mirrors what GLPI does when a tech picks a followup template from
+     * the timeline — content + is_private + requesttypes_id come straight
+     * from the template row (`glpi_itilfollowuptemplates`).
+     *
+     * Best-effort: swallows any exception so a template glitch (deleted
+     * template, missing field) doesn't abort the workflow advance. The
+     * step itself remains successful even if the followup couldn't be
+     * created — the audit log records `itilfollowups_id = 0` for that case.
+     */
+    public static function applyFollowupTemplate(int $tickets_id, int $template_id): int
+    {
+        if ($template_id <= 0) {
+            return 0;
+        }
+
+        try {
+            $tpl = new \ITILFollowupTemplate();
+            if (!$tpl->getFromDB($template_id)) {
+                return 0;
+            }
+
+            $content = (string)($tpl->fields['content'] ?? '');
+            if (trim(strip_tags($content)) === '') {
+                return 0; // Empty template — don't post a blank followup.
+            }
+
+            $input = [
+                'itemtype'   => 'Ticket',
+                'items_id'   => $tickets_id,
+                'content'    => $content,
+                'is_private' => (int)($tpl->fields['is_private'] ?? 0),
+            ];
+            // Optional fields the template can carry.
+            if (!empty($tpl->fields['requesttypes_id'])) {
+                $input['requesttypes_id'] = (int)$tpl->fields['requesttypes_id'];
+            }
+            if (!empty($tpl->fields['pendingreasons_id'])) {
+                $input['pendingreasons_id'] = (int)$tpl->fields['pendingreasons_id'];
+            }
+
+            $fup = new \ITILFollowup();
+            $new_id = $fup->add($input);
+            return $new_id ? (int)$new_id : 0;
+        } catch (\Throwable $e) {
+            return 0;
+        }
     }
 }
