@@ -41,13 +41,19 @@ New-Item -ItemType Directory -Path $stage | Out-Null
 New-Item -ItemType Directory -Path $dist -Force | Out-Null
 
 # Robocopy with exclusions. /XD excludes directories, /XF excludes files.
+# Every bare (non-path) pattern is added to BOTH lists — we can't tell from
+# the name alone whether ".git" or "phpunit.xml*" denotes a directory or a
+# file, and there's no harm in a stale entry (robocopy simply won't match
+# names of the wrong kind). A prior version tried to guess via `-like
+# '*.*'`/`-like '*?*'`, but `-like` treats `?` as a single-char wildcard, so
+# that second test matched almost every non-empty string — dot-directories
+# such as `.git` and `.github` fell into the file-only branch and were
+# never excluded, shipping the full git history in every release tarball.
 $xd = @()
 $xf = @()
 foreach ($p in $ignore) {
     if ($p -match '[\\/]') {
         $xd += $p.TrimEnd('/').Replace('/', '\')
-    } elseif ($p -like '*.*' -or $p -like '*?*') {
-        $xf += $p
     } else {
         $xd += $p
         $xf += $p

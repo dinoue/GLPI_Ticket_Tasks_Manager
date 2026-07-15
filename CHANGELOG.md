@@ -25,6 +25,18 @@ This project follows [Semantic Versioning](https://semver.org/).
   operators are unchanged — `contains` with an empty value still never
   matches.
 
+### Fixed
+- **`build.ps1` was shipping `.git/` and `.github/` inside the release
+  tarball.** The `.glpiignore` → robocopy translation classified any
+  pattern matching `-like '*?*'` as file-only (`/XF`); since `-like`
+  treats `?` as a single-character wildcard, that test matched almost
+  every non-empty string, so dot-directories (`.git`, `.github`) never
+  made it into `/XD` and were copied in full. Every prior release
+  tarball back to whenever `.glpiignore` gained its build step
+  inherited this. Every bare pattern is now added to both `/XD` and
+  `/XF` — harmless for entries of the "wrong" kind, but no longer
+  silently skips real directories.
+
 ## [1.11.1] — 2026-05-29
 
 ### Added
