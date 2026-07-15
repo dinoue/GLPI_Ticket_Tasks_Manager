@@ -650,8 +650,9 @@ class Workflow extends CommonDBTM
      *
      * Rule shape:
      *   { "field": "content" | "name" | "form:<question_id>",
-     *     "op":    "contains" | "not_contains" | "eq" | "neq",
-     *     "value": "<string>",
+     *     "op":    "contains" | "not_contains" | "eq" | "neq"
+     *              | "is_empty" | "not_empty",
+     *     "value": "<string>",   (ignored for is_empty / not_empty)
      *     "goto_step_id": <int> }
      *
      * Loop guard: a rule may only route to a step whose `step_order` is
@@ -741,9 +742,20 @@ class Workflow extends CommonDBTM
                     : mb_substr((string)$actual, 0, 200);
 
                 if ($actual === null) {
-                    $eval['skip_reason'] = 'field_unresolved';
-                    $trace['evaluations'][] = $eval;
-                    continue;
+                    // For emptiness operators, an unresolvable field (form
+                    // question unanswered, hidden by a condition, or the
+                    // ticket wasn't created from a form) counts as EMPTY —
+                    // that's exactly the case "is empty" is meant to catch.
+                    // Every other operator can't compare against nothing,
+                    // so the rule is skipped.
+                    if ($op === 'is_empty' || $op === 'not_empty') {
+                        $actual         = '';
+                        $eval['actual'] = '';
+                    } else {
+                        $eval['skip_reason'] = 'field_unresolved';
+                        $trace['evaluations'][] = $eval;
+                        continue;
+                    }
                 }
                 if (!self::evalOperator($op, $actual, $value)) {
                     $eval['skip_reason'] = 'op_no_match';
@@ -998,6 +1010,11 @@ class Workflow extends CommonDBTM
     /**
      * Evaluate a rule operator. `$actual` is already lowercased; we lowercase
      * `$value` here so comparisons are case-insensitive end-to-end.
+     *
+     * Note `contains` with an empty value never matches (an empty needle is
+     * meaningless, not "matches everything"). To route on "the answer is
+     * empty / was never given", use `is_empty` / `not_empty` — those ignore
+     * the value entirely.
      */
     private static function evalOperator(string $op, string $actual, string $value): bool
     {
@@ -1007,6 +1024,8 @@ class Workflow extends CommonDBTM
             case 'not_contains': return $needle === '' || !str_contains($actual, $needle);
             case 'eq':           return $actual === $needle;
             case 'neq':          return $actual !== $needle;
+            case 'is_empty':     return $actual === '';
+            case 'not_empty':    return $actual !== '';
             default:             return false;
         }
     }

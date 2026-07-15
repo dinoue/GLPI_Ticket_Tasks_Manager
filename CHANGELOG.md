@@ -3,6 +3,28 @@
 All notable changes to **Tasks Manager** are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.12.0] — 2026-07-15
+
+### Added
+- **"is empty" / "is not empty" routing operators.** A rule like
+  *"when Database type contains ‹empty value› → go to step X"* could
+  **never** fire: `contains` with an empty value is defined as
+  no-match (an empty needle is meaningless, not "matches everything"),
+  and an **unanswered** form question resolves to `null`, which skips
+  the rule entirely (`field_unresolved` in the routing trace). So the
+  workflow silently fell through to the linear next step — e.g. a DBA
+  installation step was created even when no database was requested.
+
+  The two new operators express that intent directly:
+  - **is empty** — matches when the answer/field is blank **or was
+    never given** (question unanswered, hidden by a form condition, or
+    the ticket wasn't created from a form).
+  - **is not empty** — matches when the answer/field has any content.
+
+  Both ignore the value box (the editor greys it out). Existing
+  operators are unchanged — `contains` with an empty value still never
+  matches.
+
 ## [1.11.1] — 2026-05-29
 
 ### Added

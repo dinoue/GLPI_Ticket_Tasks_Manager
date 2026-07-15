@@ -1,0 +1,24 @@
+# Composer
+/vendor/
+composer.lock
+
+# IDE / editors
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# OneDrive sync conflict files
+*-LITO-*
+*-conflict-*
+
+# Build artifacts
+/dist/
+/build/
+*.tar.bz2
+*.tar.gz
+*.zip

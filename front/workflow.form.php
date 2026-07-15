@@ -900,11 +900,26 @@ global $CFG_GLPI;
             { v: 'not_contains', l: '<?= __('does not contain',  'tasksmanager') ?>' },
             { v: 'eq',           l: '<?= __('equals',            'tasksmanager') ?>' },
             { v: 'neq',          l: '<?= __('does not equal',    'tasksmanager') ?>' },
+            { v: 'is_empty',     l: '<?= __('is empty',          'tasksmanager') ?>' },
+            { v: 'not_empty',    l: '<?= __('is not empty',      'tasksmanager') ?>' },
         ];
         return items.map(it =>
             `<option value="${it.v}"${it.v === selectedOp ? ' selected' : ''}>${escHtml(it.l)}</option>`
         ).join('');
     }
+
+    // is_empty / not_empty take no comparison value — grey the input out so
+    // it's obvious the rule fires on the answer being empty/filled, not on
+    // matching a string.
+    function opNeedsValue(op) {
+        return op !== 'is_empty' && op !== 'not_empty';
+    }
+
+    window.tmRuleOpChanged = function (sel) {
+        const valInput = sel.closest('.tm-rule')?.querySelector('.tm-rule-value');
+        if (valInput) valInput.disabled = !opNeedsValue(sel.value);
+        tmSaveRulesFromBtn(sel);
+    };
 
     function renderRule(rule, currentOrder) {
         rule = rule || {};
@@ -915,10 +930,11 @@ global $CFG_GLPI;
             <select class="form-select form-select-sm tm-rule-field" style="max-width:200px"
                     onchange="tmSaveRulesFromBtn(this)">${fieldOptions(rule.field || 'content')}</select>
             <select class="form-select form-select-sm tm-rule-op" style="max-width:160px"
-                    onchange="tmSaveRulesFromBtn(this)">${opOptions(rule.op || 'contains')}</select>
+                    onchange="tmRuleOpChanged(this)">${opOptions(rule.op || 'contains')}</select>
             <input type="text" class="form-control form-control-sm tm-rule-value" style="max-width:200px"
                    placeholder="<?= __('value', 'tasksmanager') ?>"
                    value="${escHtml(rule.value || '')}"
+                   ${opNeedsValue(rule.op || 'contains') ? '' : 'disabled'}
                    onblur="tmSaveRulesFromBtn(this)">
             <span class="small text-muted"><?= __('go to', 'tasksmanager') ?></span>
             <select class="form-select form-select-sm tm-rule-goto" style="max-width:240px"

@@ -194,7 +194,7 @@ switch ($action) {
         }
 
         // Normalise / whitelist: drop unknown fields, coerce types, skip empty
-        $allowed_ops = ['contains', 'not_contains', 'eq', 'neq'];
+        $allowed_ops = ['contains', 'not_contains', 'eq', 'neq', 'is_empty', 'not_empty'];
         $clean = [];
         foreach ((array)$decoded as $r) {
             if (!is_array($r)) { continue; }
