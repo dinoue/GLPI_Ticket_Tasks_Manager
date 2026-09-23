@@ -239,6 +239,7 @@ function plugin_tasksmanager_install(): bool
     // called inline: applyStep() can run inside an approver's
     // Ticket::update, so it only inserts a `queued` row here.
     //   status = queued | submitting | submitted | succeeded | failed
+    //            | cancelled (step skipped / workflow removed while queued)
     // UNIQUE (ticket_workflows_id, step_order) is the idempotency guard: a
     // Restart or a double-advance on the same step instance cannot queue
     // (and provision) a second time.
