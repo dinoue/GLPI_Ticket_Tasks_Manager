@@ -144,6 +144,8 @@ function plugin_tasksmanager_install(): bool
             `itilfollowuptemplates_id` INT UNSIGNED NOT NULL DEFAULT 0,
             `assign_groups_id`      INT UNSIGNED NOT NULL DEFAULT 0,
             `assign_users_id`       INT UNSIGNED NOT NULL DEFAULT 0,
+            `step_type`             VARCHAR(20)  NOT NULL DEFAULT 'task',
+            `automation_config`     TEXT         NULL,
             `date_creation`         TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (`id`),
             KEY `workflows_id`  (`workflows_id`),
@@ -210,6 +212,61 @@ function plugin_tasksmanager_install(): bool
                 ADD `assign_groups_id` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `itilfollowuptemplates_id`,
                 ADD `assign_users_id`  INT UNSIGNED NOT NULL DEFAULT 0 AFTER `assign_groups_id`");
         }
+        // 1.13.0: explicit step type + automation config.
+        //   step_type         = task | followup | automation
+        //   automation_config = JSON (connector, catalog item, project and
+        //                       input mapping) — only read for automation
+        // Existing follow-up-only steps are recognised by
+        // tasktemplates_id = 0, so backfill them once when the column is
+        // added. The engine still treats tasktemplates_id = 0 as follow-up
+        // on its own; step_type only has to be right for automation.
+        if (!$DB->fieldExists('glpi_plugin_tasksmanager_workflow_steps', 'step_type')) {
+            $DB->doQuery("ALTER TABLE `glpi_plugin_tasksmanager_workflow_steps`
+                ADD `step_type`         VARCHAR(20) NOT NULL DEFAULT 'task' AFTER `assign_users_id`,
+                ADD `automation_config` TEXT        NULL AFTER `step_type`");
+            $DB->update(
+                'glpi_plugin_tasksmanager_workflow_steps',
+                ['step_type' => 'followup'],
+                ['tasktemplates_id' => 0]
+            );
+        }
+    }
+
+    // -------------------------------------------------------
+    // Table: glpi_plugin_tasksmanager_automation_jobs
+    // Outbound automation requests (e.g. an Aria catalog request) queued
+    // by an automation step and driven by the automationjobs cron. Never
+    // called inline: applyStep() can run inside an approver's
+    // Ticket::update, so it only inserts a `queued` row here.
+    //   status = queued | submitting | submitted | succeeded | failed
+    // UNIQUE (ticket_workflows_id, step_order) is the idempotency guard: a
+    // Restart or a double-advance on the same step instance cannot queue
+    // (and provision) a second time.
+    // -------------------------------------------------------
+    if (!$DB->tableExists('glpi_plugin_tasksmanager_automation_jobs')) {
+        $DB->doQuery("CREATE TABLE `glpi_plugin_tasksmanager_automation_jobs` (
+            `id`                  INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            `tickets_id`          INT UNSIGNED NOT NULL DEFAULT 0,
+            `ticket_workflows_id` INT UNSIGNED NOT NULL DEFAULT 0,
+            `step_order`          INT UNSIGNED NOT NULL DEFAULT 0,
+            `workflow_steps_id`   INT UNSIGNED NOT NULL DEFAULT 0,
+            `tickettasks_id`      INT UNSIGNED NOT NULL DEFAULT 0,
+            `connector`           VARCHAR(40)  NOT NULL DEFAULT '',
+            `external_id`         VARCHAR(255) NULL DEFAULT NULL,
+            `status`              VARCHAR(20)  NOT NULL DEFAULT 'queued',
+            `attempts`            INT UNSIGNED NOT NULL DEFAULT 0,
+            `last_error`          TEXT         NULL,
+            `request_payload`     MEDIUMTEXT   NULL,
+            `response`            MEDIUMTEXT   NULL,
+            `date_creation`       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            `date_mod`            TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            `date_submitted`      TIMESTAMP    NULL DEFAULT NULL,
+            `date_completed`      TIMESTAMP    NULL DEFAULT NULL,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `step_instance` (`ticket_workflows_id`, `step_order`),
+            KEY `tickets_id` (`tickets_id`),
+            KEY `status`     (`status`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;");
     }
 
     // -------------------------------------------------------
@@ -295,6 +352,19 @@ function plugin_tasksmanager_install(): bool
         ]
     );
 
+    // Automation job runner (2-min sweep): submits queued jobs to their
+    // connector and polls submitted ones. Idempotent like the SLA cron.
+    \CronTask::register(
+        \GlpiPlugin\Tasksmanager\Automation\Runner::class,
+        'automationjobs',
+        120,
+        [
+            'state'    => \CronTask::STATE_WAITING,
+            'mode'     => \CronTask::MODE_EXTERNAL,
+            'comment'  => 'Tasks Manager automation steps (submit + poll)',
+        ]
+    );
+
     return true;
 }
 
@@ -308,6 +378,7 @@ function plugin_tasksmanager_uninstall(): bool
     global $DB;
 
     $tables = [
+        'glpi_plugin_tasksmanager_automation_jobs',
         'glpi_plugin_tasksmanager_workflow_events',
         'glpi_plugin_tasksmanager_pending_workflows',
         'glpi_plugin_tasksmanager_ticket_workflows',
