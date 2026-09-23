@@ -14,6 +14,7 @@ use GlpiPlugin\Tasksmanager\Workflow;
  *   "ticket:entity"           the ticket entity's full name
  *   "GLPI-{ticket:id}-{form:26}"  string with placeholders
  *   any other scalar          literal
+ *   [spec, spec, …]           list; each element resolved, empties dropped
  *   {"value": …}              literal (escape hatch, e.g. a literal "form:1")
  *   {"from": <spec>,          source, then optionally:
  *    "map": {"label": out},     lookup (exact, then case-insensitive)
@@ -28,7 +29,10 @@ use GlpiPlugin\Tasksmanager\Workflow;
 class Mapping
 {
     /** Top-level config keys that are not value specs. */
-    private const RESERVED = ['connector', 'inputs', 'failure_groups_id', 'timeout_minutes', 'success_followup_private'];
+    private const RESERVED = [
+        'connector', 'inputs', 'failure_groups_id', 'timeout_minutes',
+        'success_followup_private', 'require_review',
+    ];
 
     /**
      * Resolve the `inputs` map. Keys resolving to null / '' are omitted
@@ -72,7 +76,15 @@ class Mapping
             return self::resolveSource($spec, $tickets_id);
         }
         if (array_is_list($spec)) {
-            return $spec; // literal list (e.g. tags)
+            // List (tags, disk sizes): resolve each element, drop empties.
+            $out = [];
+            foreach ($spec as $i => $element) {
+                $value = self::resolve($element, $tickets_id, $key . '[' . $i . ']');
+                if ($value !== null && $value !== '') {
+                    $out[] = $value;
+                }
+            }
+            return $out;
         }
         if (array_key_exists('value', $spec)) {
             return $spec['value'];
