@@ -290,6 +290,22 @@ class VsphereConnector implements ConnectorInterface
         ], fn ($v) => $v !== ''), '', ['vm' => $vm]);
     }
 
+    public function testConnection(): string
+    {
+        $this->dropSession();
+        $this->getSession(true);
+
+        // Read-only calls the Build VM page depends on: if these work, the
+        // dropdowns will load.
+        $clusters  = count($this->listClusters());
+        $templates = count($this->listTemplates());
+        return sprintf(
+            __('Connected to vCenter — %1$d cluster(s) and %2$d content-library template(s) visible.', 'tasksmanager'),
+            $clusters,
+            $templates
+        );
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     //  Inventory lookups (review page)
     // ─────────────────────────────────────────────────────────────────────

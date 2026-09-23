@@ -334,3 +334,17 @@ msgstr ""
 msgid "Settings"
 msgstr ""
 
+
+# 1.13.0 - connection test
+msgid "Connected to Aria — %d catalog item(s) visible."
+msgstr ""
+
+msgid "Connected to vCenter — %1$d cluster(s) and %2$d content-library template(s) visible."
+msgstr ""
+
+msgid "Connection test failed:"
+msgstr ""
+
+msgid "Save and test connection"
+msgstr ""
+

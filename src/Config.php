@@ -160,6 +160,43 @@ class Config extends CommonDBTM
     }
 
     /**
+     * "Save and test" for one connection. A submit button of the settings
+     * form, so what was just typed is saved first and then tested.
+     */
+    private static function renderTestButton(string $name): void
+    {
+        echo '<div class="mb-3">';
+        echo '<button type="submit" name="' . $name . '" value="1" class="btn btn-outline-secondary btn-sm">'
+            . '<i class="ti ti-plug-connected me-1"></i>' . __('Save and test connection', 'tasksmanager')
+            . '</button>';
+        echo '</div>';
+    }
+
+    /**
+     * Run a connection test for the button pressed ('test_aria' /
+     * 'test_vsphere'). Returns [ok, message], or null when no test was
+     * asked for. Credentials never appear in the message.
+     *
+     * @return array{0: bool, 1: string}|null
+     */
+    public static function runConnectionTest(array $input): ?array
+    {
+        if (!empty($input['test_aria'])) {
+            $connector = new AriaConnector();
+        } elseif (!empty($input['test_vsphere'])) {
+            $connector = new VsphereConnector();
+        } else {
+            return null;
+        }
+
+        try {
+            return [true, $connector->testConnection()];
+        } catch (\Throwable $e) {
+            return [false, __('Connection test failed:', 'tasksmanager') . ' ' . $e->getMessage()];
+        }
+    }
+
+    /**
      * Display the configuration form
      */
     public static function showConfigForm(): void
@@ -244,6 +281,7 @@ class Config extends CommonDBTM
         echo '<option value="0"' . ($aria_verify === '0' ? ' selected' : '') . '>' . __('No') . '</option>';
         echo '</select>';
         echo '</div>';
+        self::renderTestButton('test_aria');
 
         // ── vCenter (VM provisioning from content-library templates) ─────
         $vs_url     = (string)self::getConfigValue(VsphereConnector::CFG_URL, '');
@@ -305,6 +343,7 @@ class Config extends CommonDBTM
         echo '<option value="0"' . ($vs_verify === '0' ? ' selected' : '') . '>' . __('No') . '</option>';
         echo '</select>';
         echo '</div>';
+        self::renderTestButton('test_vsphere');
 
         echo '</div>';
         echo '<div class="card-footer text-end">';

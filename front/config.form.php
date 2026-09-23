@@ -15,7 +15,8 @@ if (!$plugin->isInstalled('tasksmanager') || !$plugin->isActivated('tasksmanager
 
 Session::checkRight('config', UPDATE);
 
-if (isset($_POST['update'])) {
+// "Save and test connection" buttons submit the same form, so they save too.
+if (isset($_POST['update']) || isset($_POST['test_aria']) || isset($_POST['test_vsphere'])) {
     // CSRF already validated by GLPI 11 CheckCsrfListener
 
     Config::setConfigValue('default_priority', $_POST['default_priority'] ?? '3');
@@ -24,6 +25,12 @@ if (isset($_POST['update'])) {
     $error = Config::saveAriaSettings($_POST) ?? Config::saveVsphereSettings($_POST);
     if ($error !== null) {
         Session::addMessageAfterRedirect($error, true, ERROR);
+        Html::redirect($_SERVER['REQUEST_URI']);
+    }
+
+    $test = Config::runConnectionTest($_POST);
+    if ($test !== null) {
+        Session::addMessageAfterRedirect(htmlspecialchars($test[1]), true, $test[0] ? INFO : ERROR);
         Html::redirect($_SERVER['REQUEST_URI']);
     }
 

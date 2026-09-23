@@ -38,4 +38,13 @@ interface ConnectorInterface
      * @throws ConnectorException
      */
     public function poll(string $id, array $cfg): Result;
+
+    /**
+     * Log in with the stored credentials (never a cached session) and make
+     * one read-only call. Returns a short human summary for the settings
+     * page ("Connected — 12 catalog items visible").
+     *
+     * @throws ConnectorException
+     */
+    public function testConnection(): string;
 }

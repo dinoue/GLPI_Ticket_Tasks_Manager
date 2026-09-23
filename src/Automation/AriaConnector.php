@@ -148,6 +148,22 @@ class AriaConnector implements ConnectorInterface
         return Result::pending($req_status ?: $dep_status, $raw);
     }
 
+    public function testConnection(): string
+    {
+        $this->dropCachedToken();
+        $this->getAccessToken(true);
+
+        $resp = $this->request('GET', '/catalog/api/items?size=1&apiVersion=' . self::API_VERSION);
+        if ($resp['code'] < 200 || $resp['code'] >= 300) {
+            throw new ConnectorException(
+                sprintf('Logged in, but listing catalog items failed (HTTP %d): %s', $resp['code'], self::errorMessage($resp['body'])),
+                true
+            );
+        }
+        $total = is_array($resp['body']) ? (int)($resp['body']['totalElements'] ?? 0) : 0;
+        return sprintf(__('Connected to Aria — %d catalog item(s) visible.', 'tasksmanager'), $total);
+    }
+
     /**
      * Details for the success follow-up: deployment id/name plus the name
      * and IP of every machine resource.
