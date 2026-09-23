@@ -538,7 +538,7 @@ class Workflow extends CommonDBTM
         ]);
         if (count($existing) > 0) {
             $job = $existing->current();
-            if (in_array($job['status'], ['queued', 'submitting', 'submitted'], true)) {
+            if (in_array($job['status'], ['draft', 'queued', 'submitting', 'submitted'], true)) {
                 $DB->update(
                     'glpi_plugin_tasksmanager_automation_jobs',
                     ['tickettasks_id' => $tickettasks_id],
@@ -564,7 +564,9 @@ class Workflow extends CommonDBTM
                 'workflow_steps_id'   => (int)($step['id'] ?? 0),
                 'tickettasks_id'      => $tickettasks_id,
                 'connector'           => mb_substr($connector, 0, 40),
-                'status'              => 'queued',
+                // require_review: wait for a technician to check the values
+                // on the review page and click Deploy.
+                'status'              => (is_array($cfg) && !empty($cfg['require_review'])) ? 'draft' : 'queued',
                 'date_creation'       => date('Y-m-d H:i:s'),
             ]);
         } catch (\Throwable $e) {

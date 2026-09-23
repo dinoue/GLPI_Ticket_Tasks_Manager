@@ -600,6 +600,10 @@ global $CFG_GLPI;
                         <option value="<?= (int)$tpl['id'] ?>"><?= htmlspecialchars($tpl['name']) ?></option>
                     <?php endforeach; ?>
                 </select>
+                <select id="tm-new-auto-connector" class="form-select form-select-sm" style="max-width:200px">
+                    <option value="vsphere"><?= __('vCenter (content library)', 'tasksmanager') ?></option>
+                    <option value="aria"><?= __('Aria Automation', 'tasksmanager') ?></option>
+                </select>
                 <button type="button" class="btn btn-outline-primary btn-sm" onclick="tmAddAutomationStep()">
                     <i class="ti ti-robot me-1"></i><?= __('Add automation step', 'tasksmanager') ?>
                 </button>
@@ -607,6 +611,7 @@ global $CFG_GLPI;
             <div class="text-muted small mt-1">
                 <i class="ti ti-info-circle me-1"></i>
                 <?= __('An automation step creates a To-do task and sends a request (Aria catalog item) in the background. On success the task is closed and the workflow continues; on failure the ticket is reassigned and the task is left for a technician.', 'tasksmanager') ?>
+                <?= __('vCenter steps wait for a technician to review the values (Build VM button on the ticket\'s Workflow tab) before deploying.', 'tasksmanager') ?>
             </div>
 
         </div>
@@ -714,6 +719,7 @@ global $CFG_GLPI;
             action: 'add_automation_step',
             workflows_id: WORKFLOW_ID,
             tasktemplates_id: sel.value,
+            connector: document.getElementById('tm-new-auto-connector').value,
         }).then(resp => {
             if (!resp.ok) { alert(resp.error || 'Error'); return; }
             window.location.reload();

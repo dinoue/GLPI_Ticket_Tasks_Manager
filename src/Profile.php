@@ -18,6 +18,14 @@ class Profile extends CommonDBTM
 {
     /** Right name persisted in glpi_profilerights.name */
     public const RIGHT_WORKFLOWS = 'plugin_tasksmanager_workflows';
+    /** Review and launch automation (VM) deployments — UPDATE = may deploy. */
+    public const RIGHT_PROVISION = 'plugin_tasksmanager_provision';
+
+    /** Right => rights granted to the super-admin profile on install. */
+    private const INSTALL_RIGHTS = [
+        self::RIGHT_WORKFLOWS => READ | UPDATE | CREATE | DELETE | PURGE,
+        self::RIGHT_PROVISION => READ | UPDATE,
+    ];
 
     public static function getTypeName($nb = 0): string
     {
@@ -50,6 +58,15 @@ class Profile extends CommonDBTM
                     CREATE => __('Create'),
                     DELETE => __('Delete'),
                     PURGE  => __('Purge'),
+                ],
+            ],
+            [
+                'itemtype' => Workflow::class,
+                'label'    => __('Provision VMs (automation steps)', 'tasksmanager'),
+                'field'    => self::RIGHT_PROVISION,
+                'rights'   => [
+                    READ   => __('Read'),
+                    UPDATE => __('Deploy', 'tasksmanager'),
                 ],
             ],
         ];
@@ -141,6 +158,13 @@ class Profile extends CommonDBTM
      */
     public static function install(): void
     {
+        foreach (self::INSTALL_RIGHTS as $right => $admin_rights) {
+            self::installRight($right, $admin_rights);
+        }
+    }
+
+    private static function installRight(string $right, int $admin_rights): void
+    {
         global $DB;
 
         // ProfileRight::addProfileRights inserts a row per profile and will
@@ -152,7 +176,7 @@ class Profile extends CommonDBTM
             foreach ($DB->request([
                 'SELECT' => ['profiles_id'],
                 'FROM'   => 'glpi_profilerights',
-                'WHERE'  => ['name' => self::RIGHT_WORKFLOWS],
+                'WHERE'  => ['name' => $right],
             ]) as $row) {
                 $existing[(int)$row['profiles_id']] = true;
             }
@@ -160,7 +184,7 @@ class Profile extends CommonDBTM
 
         if (empty($existing)) {
             // No row yet anywhere — let GLPI insert defaults for every profile.
-            ProfileRight::addProfileRights([self::RIGHT_WORKFLOWS]);
+            ProfileRight::addProfileRights([$right]);
         } else {
             // Backfill any profiles that don't already have the row (e.g. new
             // profiles created after the first install).
@@ -173,26 +197,26 @@ class Profile extends CommonDBTM
                 if (!isset($existing[$pid])) {
                     $DB->insert('glpi_profilerights', [
                         'profiles_id' => $pid,
-                        'name'        => self::RIGHT_WORKFLOWS,
+                        'name'        => $right,
                         'rights'      => 0,
                     ]);
                 }
             }
         }
 
-        // Grant full rights to super-admin (default profile id 4) if present
+        // Grant the right to super-admin (default profile id 4) if present
         $DB->update(
             'glpi_profilerights',
-            ['rights' => READ | UPDATE | CREATE | DELETE | PURGE],
-            ['profiles_id' => 4, 'name' => self::RIGHT_WORKFLOWS]
+            ['rights' => $admin_rights],
+            ['profiles_id' => 4, 'name' => $right]
         );
     }
 
     /**
-     * Uninstall — drop the right from every profile.
+     * Uninstall — drop the rights from every profile.
      */
     public static function uninstall(): void
     {
-        ProfileRight::deleteProfileRights([self::RIGHT_WORKFLOWS]);
+        ProfileRight::deleteProfileRights(array_keys(self::INSTALL_RIGHTS));
     }
 }

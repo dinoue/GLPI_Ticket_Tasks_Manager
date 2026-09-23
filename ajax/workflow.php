@@ -142,6 +142,7 @@ switch ($action) {
 
         $workflows_id     = (int)($_POST['workflows_id']     ?? 0);
         $tasktemplates_id = (int)($_POST['tasktemplates_id'] ?? 0);
+        $connector        = (string)($_POST['connector'] ?? \GlpiPlugin\Tasksmanager\Automation\VsphereConnector::NAME);
         if (!$workflows_id || !$tasktemplates_id) {
             tm_respond(false, 400, 'Missing parameters');
         }
@@ -155,7 +156,29 @@ switch ($action) {
         ]);
         $step_order = (count($last) > 0 ? (int)$last->current()['step_order'] : 0) + 10;
 
-        $skeleton = [
+        // vCenter: values are reviewed by a technician (Build VM page)
+        // before anything is deployed; form:0 = replace with your question ids.
+        $skeleton = $connector === \GlpiPlugin\Tasksmanager\Automation\VsphereConnector::NAME ? [
+            'connector'         => 'vsphere',
+            'require_review'    => true,
+            'inputs'            => [
+                'template'           => ['from' => 'form:0', 'map' => new stdClass()],
+                'vm_name'            => ['from' => 'form:0', 'required' => true],
+                'cluster'            => '',
+                'folder'             => '',
+                'datastore'          => '',
+                'network'            => ['from' => 'form:0', 'map' => new stdClass()],
+                'cpu'                => ['from' => 'form:0', 'type' => 'int', 'min' => 1, 'max' => 16],
+                'memory_gb'          => ['from' => 'form:0', 'type' => 'int', 'min' => 2, 'max' => 128],
+                'disks'              => [],
+                'customization_spec' => '',
+                'ip'                 => ['from' => 'form:0'],
+                'prefix'             => 24,
+                'gateway'            => '',
+            ],
+            'failure_groups_id' => 0,
+            'timeout_minutes'   => 240,
+        ] : [
             'connector'         => 'aria',
             'catalog_item_id'   => '',
             'project_id'        => ['from' => 'ticket:entity', 'map' => new stdClass()],
@@ -202,7 +225,10 @@ switch ($action) {
             tm_respond(false, 400, 'automation_config must be a JSON object');
         }
         $connector = (string)($cfg['connector'] ?? 'aria');
-        if (!in_array($connector, [\GlpiPlugin\Tasksmanager\Automation\AriaConnector::NAME], true)) {
+        if (!in_array($connector, [
+            \GlpiPlugin\Tasksmanager\Automation\AriaConnector::NAME,
+            \GlpiPlugin\Tasksmanager\Automation\VsphereConnector::NAME,
+        ], true)) {
             tm_respond(false, 400, 'Unknown connector: ' . $connector);
         }
         if (isset($cfg['inputs']) && (!is_array($cfg['inputs']) || (array_is_list($cfg['inputs']) && $cfg['inputs'] !== []))) {

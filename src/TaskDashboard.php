@@ -140,6 +140,8 @@ class TaskDashboard extends CommonGLPI
 
             echo '</div></div></div>';
 
+            self::renderAutomationJob((int)$tw['id'], (int)$tw['current_step']);
+
             // Which steps were actually instantiated? A workflow step has a
             // taskstate row only when applyStep ran for it. Steps with
             // step_order < current_step but no taskstate row were *jumped
@@ -487,6 +489,49 @@ class TaskDashboard extends CommonGLPI
      * card. Silently no-ops if the events table is missing (pre-1.3.14
      * installs that haven't run the upgrade yet) or there are no events.
      */
+    /**
+     * Status of the current step's automation job, with the "Build VM"
+     * button while a vSphere job waits for review.
+     */
+    private static function renderAutomationJob(int $ticket_workflows_id, int $step_order): void
+    {
+        $job = Automation\Provision::getCurrentJob($ticket_workflows_id, $step_order);
+        if ($job === null) {
+            return;
+        }
+
+        $badges = [
+            'draft'      => ['bg-yellow-lt', __('Waiting for review', 'tasksmanager')],
+            'queued'     => ['bg-azure-lt',  __('Queued', 'tasksmanager')],
+            'submitting' => ['bg-azure-lt',  __('Submitting', 'tasksmanager')],
+            'submitted'  => ['bg-blue-lt',   __('Running', 'tasksmanager')],
+            'succeeded'  => ['bg-green-lt',  __('Succeeded', 'tasksmanager')],
+            'failed'     => ['bg-red-lt',    __('Failed', 'tasksmanager')],
+            'cancelled'  => ['bg-secondary-lt', __('Cancelled', 'tasksmanager')],
+        ];
+        [$class, $label] = $badges[$job['status']] ?? ['bg-secondary-lt', (string)$job['status']];
+
+        echo '<div class="alert alert-light border mt-3 d-flex flex-wrap align-items-center gap-2">';
+        echo '<i class="ti ti-robot"></i><strong>' . __('Automation', 'tasksmanager') . '</strong>';
+        echo '<span class="badge ' . $class . '">' . htmlspecialchars($label) . '</span>';
+        if ($job['status'] === 'submitted' && !empty($job['external_id'])) {
+            echo '<span class="text-muted small">' . htmlspecialchars((string)$job['external_id']) . '</span>';
+        }
+        if ($job['status'] === 'failed' && !empty($job['last_error'])) {
+            echo '<span class="text-danger small w-100">' . htmlspecialchars((string)$job['last_error']) . '</span>';
+        }
+        if (
+            $job['status'] === 'draft'
+            && $job['connector'] === Automation\VsphereConnector::NAME
+            && Automation\Provision::canDeploy($job)
+        ) {
+            $url = Plugin::getWebDir('tasksmanager') . '/front/provision.form.php?job=' . (int)$job['id'];
+            echo '<a class="btn btn-sm btn-primary ms-auto" href="' . htmlspecialchars($url) . '">'
+                . '<i class="ti ti-server-2 me-1"></i>' . __('Build VM', 'tasksmanager') . '</a>';
+        }
+        echo '</div>';
+    }
+
     private static function renderHistory(int $tickets_id, int $limit = 12): void
     {
         global $DB;
