@@ -21,7 +21,7 @@ if (isset($_POST['update'])) {
     Config::setConfigValue('default_priority', $_POST['default_priority'] ?? '3');
     Config::setConfigValue('enable_notifications', $_POST['enable_notifications'] ?? '1');
 
-    $error = Config::saveAriaSettings($_POST);
+    $error = Config::saveAriaSettings($_POST) ?? Config::saveVsphereSettings($_POST);
     if ($error !== null) {
         Session::addMessageAfterRedirect($error, true, ERROR);
         Html::redirect($_SERVER['REQUEST_URI']);

@@ -9,10 +9,16 @@ use GlpiPlugin\Tasksmanager\Workflow;
  * Runner — the automationjobs cron (registered in the install hook,
  * every 120 s). Drives glpi_plugin_tasksmanager_automation_jobs:
  *
+ *   draft ──review page "Deploy"──▶ queued   (steps with require_review)
  *   queued ──submit──▶ submitting ──▶ submitted ──poll──▶ succeeded
  *      │                    │               │
  *      └─ step no longer ── └─ crash ─────── └─────────────▶ failed
  *         current: cancelled   (stale)
+ *
+ * A reviewed job carries the technician's values in request_payload
+ * ('reviewed' => true); those are sent as-is instead of re-mapping the
+ * form. A connector may report several phases through Result::$nextId;
+ * each is persisted as external_id before it runs.
  *
  * succeeded: post a follow-up (VM name, IP, deployment id), then set the
  *   step's task to Done. The existing ITEM_UPDATE hook advances the
@@ -32,6 +38,8 @@ class Runner
     public const DEFAULT_TIMEOUT_MINUTES = 240;
     /** A job left in `submitting` this long means the run died mid-call. */
     private const STALE_SUBMIT_SECONDS   = 600;
+    /** Phases one job may run back-to-back in a single cron run. */
+    private const MAX_PHASES_PER_RUN     = 10;
 
     private const TABLE = 'glpi_plugin_tasksmanager_automation_jobs';
 
@@ -59,6 +67,16 @@ class Runner
         }
 
         $done = self::failStaleSubmits();
+
+        // Drafts wait for a technician (review page); only drop the ones
+        // whose step is no longer running.
+        foreach (self::jobs('draft') as $job) {
+            if (!self::isStillCurrent($job)) {
+                self::setStatus((int)$job['id'], 'cancelled', ['date_completed' => date('Y-m-d H:i:s')]);
+                self::log('automation_cancelled', $job, ['reason' => 'step_not_current']);
+                $done++;
+            }
+        }
 
         foreach (self::jobs('queued') as $job) {
             if (self::processQueued($job)) {
@@ -107,8 +125,17 @@ class Runner
 
         try {
             [$connector, $cfg] = self::load($job);
-            $inputs = Mapping::resolveInputs((array)($cfg['inputs'] ?? []), (int)$job['tickets_id']);
-            $cfg    = Mapping::resolveConfig($cfg, (int)$job['tickets_id']);
+            $reviewed = self::payload($job);
+            if (!empty($reviewed['reviewed'])) {
+                // A technician approved these exact values on the review
+                // page — send them as-is, don't re-map from the form.
+                $inputs = (array)($reviewed['inputs'] ?? []);
+                $cfg    = (array)($reviewed['config'] ?? []) + $cfg;
+            } else {
+                $inputs = Mapping::resolveInputs((array)($cfg['inputs'] ?? []), (int)$job['tickets_id']);
+                $cfg    = Mapping::resolveConfig($cfg, (int)$job['tickets_id']);
+                $reviewed = [];
+            }
             if (empty($cfg['deployment_name'])) {
                 $cfg['deployment_name'] = sprintf('GLPI-%d-%d', (int)$job['tickets_id'], $job_id);
             }
@@ -124,7 +151,7 @@ class Runner
             self::TABLE,
             [
                 'status'          => 'submitting',
-                'request_payload' => self::encode(['inputs' => $inputs, 'config' => $cfg]),
+                'request_payload' => self::encode(['inputs' => $inputs, 'config' => $cfg] + $reviewed),
             ],
             ['id' => $job_id, 'status' => 'queued']
         );
@@ -174,23 +201,50 @@ class Runner
             return true;
         }
 
-        try {
-            $result = $connector->poll((string)$job['external_id'], $cfg);
-        } catch (ConnectorException $e) {
-            return self::handleError($job, $e, 'submitted');
+        // Poll with what was actually submitted: the resolved config plus
+        // the inputs, which multi-phase connectors (vSphere disks, IP)
+        // need after the first call.
+        $sent     = self::payload($job);
+        $poll_cfg = (array)($sent['config'] ?? []) + $cfg;
+        $poll_cfg['resolved_inputs'] = (array)($sent['inputs'] ?? []);
+
+        $external_id = (string)$job['external_id'];
+        for ($phase = 0; ; $phase++) {
+            try {
+                $result = $connector->poll($external_id, $poll_cfg);
+            } catch (ConnectorException $e) {
+                return self::handleError($job, $e, 'submitted');
+            }
+            if (!$result->isPending() || $result->nextId === null || $phase >= self::MAX_PHASES_PER_RUN) {
+                break;
+            }
+            // Persist the phase before running it, so a crash resumes here.
+            $external_id = $result->nextId;
+            self::setStatus((int)$job['id'], 'submitted', [
+                'external_id' => mb_substr($external_id, 0, 255),
+                'attempts'    => 0,
+                'last_error'  => null,
+            ]);
+            $job['external_id'] = $external_id;
+            $job['attempts']    = 0;
         }
 
         if ($result->isPending()) {
-            self::setStatus((int)$job['id'], 'submitted', [
+            $fields = [
                 'attempts'   => 0,
                 'last_error' => null,
                 'response'   => self::encode($result->raw),
-            ]);
-            return false;
+            ];
+            if ($result->nextId !== null) {
+                // Phase cap reached: the finished phase must not rerun.
+                $fields['external_id'] = mb_substr($result->nextId, 0, 255);
+            }
+            self::setStatus((int)$job['id'], 'submitted', $fields);
+            return $phase > 0;
         }
 
         if ($result->isSucceeded()) {
-            self::succeed($job, $cfg, $result);
+            self::succeed($job, $poll_cfg, $result);
         } else {
             self::fail($job, $result->message, $result->raw);
         }
@@ -348,7 +402,8 @@ class Runner
         $name = (string)($cfg['connector'] ?? $job['connector'] ?? AriaConnector::NAME);
         if (!isset(self::$connectors[$name])) {
             self::$connectors[$name] = match ($name) {
-                AriaConnector::NAME => new AriaConnector(),
+                AriaConnector::NAME    => new AriaConnector(),
+                VsphereConnector::NAME => new VsphereConnector(),
                 default             => throw new ConnectorException('Unknown connector: ' . $name, true),
             };
         }
@@ -374,6 +429,13 @@ class Runner
         }
         $cfg = json_decode((string)$iter->current()['automation_config'], true);
         return is_array($cfg) ? $cfg : null;
+    }
+
+    /** Decoded request_payload (reviewed values, or what was submitted). */
+    private static function payload(array $job): array
+    {
+        $data = json_decode((string)($job['request_payload'] ?? ''), true);
+        return is_array($data) ? $data : [];
     }
 
     private static function setStatus(int $job_id, string $status, array $fields = []): void

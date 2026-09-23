@@ -4,6 +4,7 @@ namespace GlpiPlugin\Tasksmanager;
 
 use CommonDBTM;
 use GlpiPlugin\Tasksmanager\Automation\AriaConnector;
+use GlpiPlugin\Tasksmanager\Automation\VsphereConnector;
 use Session;
 use Html;
 
@@ -116,6 +117,49 @@ class Config extends CommonDBTM
     }
 
     /**
+     * Save the vCenter settings (VM provisioning). Same rules as Aria: the
+     * password is encrypted, an empty field keeps it, and any credential
+     * change drops the cached session.
+     */
+    public static function saveVsphereSettings(array $input): ?string
+    {
+        $url = rtrim(trim((string)($input['vsphere_url'] ?? '')), '/');
+        if ($url !== '' && !AriaConnector::isValidUrl($url)) {
+            return __('vCenter URL must be a valid https:// URL.', 'tasksmanager');
+        }
+        $library = trim((string)($input['vsphere_library_id'] ?? ''));
+        if ($library !== '' && !VsphereConnector::isSafeId($library)) {
+            return __('Invalid content library id.', 'tasksmanager');
+        }
+        $user = trim((string)($input['vsphere_username'] ?? ''));
+
+        $drop_session = $url !== (string)self::getConfigValue(VsphereConnector::CFG_URL, '')
+            || $user !== (string)self::getConfigValue(VsphereConnector::CFG_USERNAME, '');
+        self::setConfigValue(VsphereConnector::CFG_URL, $url);
+        self::setConfigValue(VsphereConnector::CFG_USERNAME, $user);
+        self::setConfigValue(VsphereConnector::CFG_LIBRARY, $library);
+        self::setConfigValue(
+            VsphereConnector::CFG_VERIFY_SSL,
+            ($input['vsphere_verify_ssl'] ?? '1') === '0' ? '0' : '1'
+        );
+
+        $pwd = (string)($input['vsphere_password'] ?? '');
+        if ($pwd !== '') {
+            self::setConfigValue(VsphereConnector::CFG_PASSWORD, (string)(new \GLPIKey())->encrypt($pwd));
+            $drop_session = true;
+        } elseif (!empty($input['vsphere_password_clear'])) {
+            self::setConfigValue(VsphereConnector::CFG_PASSWORD, '');
+            $drop_session = true;
+        }
+
+        if ($drop_session) {
+            self::setConfigValue(VsphereConnector::CFG_SESSION, '');
+            self::setConfigValue(VsphereConnector::CFG_SESSION_EXPIRES, '0');
+        }
+        return null;
+    }
+
+    /**
      * Display the configuration form
      */
     public static function showConfigForm(): void
@@ -198,6 +242,67 @@ class Config extends CommonDBTM
         echo '<select id="tm-aria-verify" name="aria_verify_ssl" class="form-select">';
         echo '<option value="1"' . ($aria_verify !== '0' ? ' selected' : '') . '>' . __('Yes') . '</option>';
         echo '<option value="0"' . ($aria_verify === '0' ? ' selected' : '') . '>' . __('No') . '</option>';
+        echo '</select>';
+        echo '</div>';
+
+        // ── vCenter (VM provisioning from content-library templates) ─────
+        $vs_url     = (string)self::getConfigValue(VsphereConnector::CFG_URL, '');
+        $vs_user    = (string)self::getConfigValue(VsphereConnector::CFG_USERNAME, '');
+        $vs_library = (string)self::getConfigValue(VsphereConnector::CFG_LIBRARY, '');
+        $vs_has_pwd = (string)self::getConfigValue(VsphereConnector::CFG_PASSWORD, '') !== '';
+        $vs_verify  = (string)self::getConfigValue(VsphereConnector::CFG_VERIFY_SSL, '1');
+
+        echo '<h4 class="mt-4">' . __('vCenter', 'tasksmanager') . '</h4>';
+        echo '<div class="mb-3">';
+        echo '<label class="form-label" for="tm-vs-url">' . __('vCenter URL', 'tasksmanager') . '</label>';
+        echo '<input type="url" id="tm-vs-url" name="vsphere_url" class="form-control"'
+            . ' placeholder="https://vcenter.example.com"'
+            . ' value="' . htmlspecialchars($vs_url, ENT_QUOTES) . '">';
+        echo '</div>';
+
+        echo '<div class="mb-3">';
+        echo '<label class="form-label" for="tm-vs-user">' . __('Service account', 'tasksmanager') . '</label>';
+        echo '<input type="text" id="tm-vs-user" name="vsphere_username" class="form-control" autocomplete="off"'
+            . ' placeholder="svc-glpi@vsphere.local"'
+            . ' value="' . htmlspecialchars($vs_user, ENT_QUOTES) . '">';
+        echo '</div>';
+
+        echo '<div class="mb-3">';
+        echo '<label class="form-label" for="tm-vs-pwd">' . __('Password') . '</label>';
+        echo '<input type="password" id="tm-vs-pwd" name="vsphere_password" class="form-control"'
+            . ' autocomplete="new-password" value=""'
+            . ' placeholder="' . htmlspecialchars(
+                $vs_has_pwd
+                    ? __('A password is stored — leave empty to keep it', 'tasksmanager')
+                    : __('Not set', 'tasksmanager'),
+                ENT_QUOTES
+            ) . '">';
+        if ($vs_has_pwd) {
+            echo '<div class="form-check mt-1">';
+            echo '<input type="checkbox" class="form-check-input" id="tm-vs-pwd-clear" name="vsphere_password_clear" value="1">';
+            echo '<label class="form-check-label" for="tm-vs-pwd-clear">'
+                . __('Remove the stored password', 'tasksmanager') . '</label>';
+            echo '</div>';
+        }
+        echo '<div class="text-muted small">'
+            . __('Use a dedicated account with a custom role limited to deploying from the content library, configuring VMs, applying customization and powering on.', 'tasksmanager')
+            . '</div>';
+        echo '</div>';
+
+        echo '<div class="mb-3">';
+        echo '<label class="form-label" for="tm-vs-lib">' . __('Content library id (optional)', 'tasksmanager') . '</label>';
+        echo '<input type="text" id="tm-vs-lib" name="vsphere_library_id" class="form-control"'
+            . ' value="' . htmlspecialchars($vs_library, ENT_QUOTES) . '">';
+        echo '<div class="text-muted small">'
+            . __('Limit the template list to one library. Empty = templates from every library.', 'tasksmanager')
+            . '</div>';
+        echo '</div>';
+
+        echo '<div class="mb-3">';
+        echo '<label class="form-label" for="tm-vs-verify">' . __('Verify TLS certificate', 'tasksmanager') . '</label>';
+        echo '<select id="tm-vs-verify" name="vsphere_verify_ssl" class="form-select">';
+        echo '<option value="1"' . ($vs_verify !== '0' ? ' selected' : '') . '>' . __('Yes') . '</option>';
+        echo '<option value="0"' . ($vs_verify === '0' ? ' selected' : '') . '>' . __('No') . '</option>';
         echo '</select>';
         echo '</div>';
 
