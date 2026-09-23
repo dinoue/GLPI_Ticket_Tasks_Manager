@@ -348,3 +348,29 @@ msgstr ""
 msgid "Save and test connection"
 msgstr ""
 
+
+# 1.13.0 - automation status on the Workflow tab
+msgid "Automation cancelled"
+msgstr ""
+
+msgid "Automation failed"
+msgstr ""
+
+msgid "Automation job already exists"
+msgstr ""
+
+msgid "Automation job created"
+msgstr ""
+
+msgid "Automation reviewed — deploy requested"
+msgstr ""
+
+msgid "Automation submitted"
+msgstr ""
+
+msgid "Automation succeeded"
+msgstr ""
+
+msgid "Waiting for a technician with the \"Provision VMs\" right (Administration → Profiles → Tasks Manager) to review and deploy."
+msgstr ""
+

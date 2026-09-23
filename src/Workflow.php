@@ -562,6 +562,8 @@ class Workflow extends CommonDBTM
             return;
         }
 
+        $status = (is_array($cfg) && !empty($cfg['require_review'])) ? 'draft' : 'queued';
+
         try {
             $DB->insert('glpi_plugin_tasksmanager_automation_jobs', [
                 'tickets_id'          => $tickets_id,
@@ -572,7 +574,7 @@ class Workflow extends CommonDBTM
                 'connector'           => mb_substr($connector, 0, 40),
                 // require_review: wait for a technician to check the values
                 // on the review page and click Deploy.
-                'status'              => (is_array($cfg) && !empty($cfg['require_review'])) ? 'draft' : 'queued',
+                'status'              => $status,
                 'date_creation'       => date('Y-m-d H:i:s'),
             ]);
         } catch (\Throwable $e) {
@@ -586,7 +588,7 @@ class Workflow extends CommonDBTM
             $workflows_id,
             $ticket_workflows_id,
             $step_order,
-            ['automation_jobs_id' => (int)$DB->insertId(), 'connector' => $connector]
+            ['automation_jobs_id' => (int)$DB->insertId(), 'connector' => $connector, 'status' => $status]
         );
     }
 

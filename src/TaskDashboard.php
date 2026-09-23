@@ -520,14 +520,17 @@ class TaskDashboard extends CommonGLPI
         if ($job['status'] === 'failed' && !empty($job['last_error'])) {
             echo '<span class="text-danger small w-100">' . htmlspecialchars((string)$job['last_error']) . '</span>';
         }
-        if (
-            $job['status'] === 'draft'
-            && $job['connector'] === Automation\VsphereConnector::NAME
-            && Automation\Provision::canDeploy($job)
-        ) {
-            $url = Plugin::getWebDir('tasksmanager') . '/front/provision.form.php?job=' . (int)$job['id'];
-            echo '<a class="btn btn-sm btn-primary ms-auto" href="' . htmlspecialchars($url) . '">'
-                . '<i class="ti ti-server-2 me-1"></i>' . __('Build VM', 'tasksmanager') . '</a>';
+        if ($job['status'] === 'draft' && $job['connector'] === Automation\VsphereConnector::NAME) {
+            if (Automation\Provision::canDeploy($job)) {
+                $url = Plugin::getWebDir('tasksmanager') . '/front/provision.form.php?job=' . (int)$job['id'];
+                echo '<a class="btn btn-sm btn-primary ms-auto" href="' . htmlspecialchars($url) . '">'
+                    . '<i class="ti ti-server-2 me-1"></i>' . __('Build VM', 'tasksmanager') . '</a>';
+            } else {
+                // Say why there's no button instead of silently hiding it.
+                echo '<span class="text-muted small w-100">'
+                    . __('Waiting for a technician with the "Provision VMs" right (Administration → Profiles → Tasks Manager) to review and deploy.', 'tasksmanager')
+                    . '</span>';
+            }
         }
         echo '</div>';
     }
@@ -612,6 +615,13 @@ class TaskDashboard extends CommonGLPI
             'step_sla_breached'          => ['ti-alarm-filled',       __('SLA breached',             'tasksmanager')],
             'workflow_completed'         => ['ti-circle-check',       __('Workflow completed',       'tasksmanager')],
             'workflow_removed'           => ['ti-x',                  __('Workflow removed',         'tasksmanager')],
+            'automation_queued'          => ['ti-robot',              __('Automation job created',   'tasksmanager')],
+            'automation_job_exists'      => ['ti-robot',              __('Automation job already exists', 'tasksmanager')],
+            'automation_reviewed'        => ['ti-user-check',         __('Automation reviewed — deploy requested', 'tasksmanager')],
+            'automation_submitted'       => ['ti-send',               __('Automation submitted',     'tasksmanager')],
+            'automation_succeeded'       => ['ti-circle-check',       __('Automation succeeded',     'tasksmanager')],
+            'automation_failed'          => ['ti-alert-triangle',     __('Automation failed',        'tasksmanager')],
+            'automation_cancelled'       => ['ti-x',                  __('Automation cancelled',     'tasksmanager')],
         ];
 
         echo '<div class="card mt-3">';
