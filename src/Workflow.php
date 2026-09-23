@@ -26,6 +26,11 @@ class Workflow extends CommonDBTM
      */
     public static bool $suppressAutoAdvance = false;
 
+    /** workflow_steps.step_type values (1.13.0). */
+    public const STEP_TYPE_TASK       = 'task';
+    public const STEP_TYPE_FOLLOWUP   = 'followup';
+    public const STEP_TYPE_AUTOMATION = 'automation';
+
     public static function getTypeName($nb = 0): string
     {
         return _n('Workflow', 'Workflows', $nb, 'tasksmanager');
@@ -182,9 +187,15 @@ class Workflow extends CommonDBTM
     {
         global $DB;
 
+        // Automation step: a normal task from its template (which carries
+        // the automation team), forced to "To do", plus a queued job for
+        // the automationjobs cron. It needs a template, so it never falls
+        // into the follow-up-only branch below.
+        $is_automation = self::isAutomationStep($step);
+
         // Follow-up-only step (no task template): post just an ITILFollowup
         // and let the workflow flow straight through it. Always non-blocking.
-        if ((int)($step['tasktemplates_id'] ?? 0) <= 0) {
+        if (!$is_automation && (int)($step['tasktemplates_id'] ?? 0) <= 0) {
             return self::applyFollowupOnlyStep($tickets_id, $step, $ticket_workflows_id);
         }
 
@@ -212,6 +223,11 @@ class Workflow extends CommonDBTM
         // chainIfNonBlocking() calls at every applyStep call site.)
         $task_state = (int)($template->fields['state'] ?? 1);
         if (!in_array($task_state, [0, 1, 2], true)) {
+            $task_state = 1;
+        }
+        // An automation step always blocks: the Runner ticks the task on
+        // success, or a human does after a failure.
+        if ($is_automation) {
             $task_state = 1;
         }
 
@@ -303,6 +319,13 @@ class Workflow extends CommonDBTM
             $ts_update,
             ['tickettasks_id' => $new_task_id]
         );
+
+        // Queue only — no HTTP here. This can run inside an approver's
+        // Ticket::update, and a slow or failing remote call must not
+        // hold up (or break) that save.
+        if ($is_automation) {
+            self::queueAutomationJob($tickets_id, $step, $ticket_workflows_id, (int)$new_task_id);
+        }
 
         // Signal the browser that a workflow advance just happened. The JS
         // (public/js/workflow-refresh.js) listens for this header on any XHR
@@ -448,9 +471,14 @@ class Workflow extends CommonDBTM
      *   - task whose template state is Information/Done (not "To do")
      *   - missing/invalid template → treat as non-blocking so a broken
      *     step can't stall the workflow forever
+     *   - automation step → NEVER non-blocking: it waits for its job
+     *     (or a human, after a failure) to tick the task
      */
     private static function isStepNonBlocking(array $step): bool
     {
+        if (self::isAutomationStep($step)) {
+            return false;
+        }
         if ((int)($step['tasktemplates_id'] ?? 0) <= 0) {
             return true;
         }
@@ -459,6 +487,99 @@ class Workflow extends CommonDBTM
             return true;
         }
         return (int)($t->fields['state'] ?? 1) !== 1;
+    }
+
+    public static function isAutomationStep(array $step): bool
+    {
+        return ($step['step_type'] ?? '') === self::STEP_TYPE_AUTOMATION;
+    }
+
+    /**
+     * Insert the `queued` automation job for this step instance. The cron
+     * (Automation\Runner) does the actual remote call.
+     *
+     * Idempotent on (ticket_workflows_id, step_order): if a job already
+     * exists (Restart, double-advance) no second one is queued. A job
+     * still in flight is re-pointed at the new task so its success ticks
+     * the task the technician actually sees; a finished or failed job is
+     * left alone — re-provisioning is a human decision.
+     */
+    private static function queueAutomationJob(
+        int $tickets_id,
+        array $step,
+        int $ticket_workflows_id,
+        int $tickettasks_id
+    ): void {
+        global $DB;
+
+        if (!$DB->tableExists('glpi_plugin_tasksmanager_automation_jobs')) {
+            return;
+        }
+
+        $step_order = (int)$step['step_order'];
+        $cfg        = json_decode((string)($step['automation_config'] ?? ''), true);
+        $connector  = is_array($cfg) ? (string)($cfg['connector'] ?? 'aria') : 'aria';
+
+        $tw_lookup = $DB->request([
+            'SELECT' => ['workflows_id'],
+            'FROM'   => 'glpi_plugin_tasksmanager_ticket_workflows',
+            'WHERE'  => ['id' => $ticket_workflows_id],
+            'LIMIT'  => 1,
+        ]);
+        $workflows_id = (count($tw_lookup) > 0) ? (int)$tw_lookup->current()['workflows_id'] : 0;
+
+        $existing = $DB->request([
+            'FROM'  => 'glpi_plugin_tasksmanager_automation_jobs',
+            'WHERE' => [
+                'ticket_workflows_id' => $ticket_workflows_id,
+                'step_order'          => $step_order,
+            ],
+            'LIMIT' => 1,
+        ]);
+        if (count($existing) > 0) {
+            $job = $existing->current();
+            if (in_array($job['status'], ['queued', 'submitting', 'submitted'], true)) {
+                $DB->update(
+                    'glpi_plugin_tasksmanager_automation_jobs',
+                    ['tickettasks_id' => $tickettasks_id],
+                    ['id' => (int)$job['id']]
+                );
+            }
+            self::logEvent(
+                'automation_job_exists',
+                $tickets_id,
+                $workflows_id,
+                $ticket_workflows_id,
+                $step_order,
+                ['automation_jobs_id' => (int)$job['id'], 'status' => (string)$job['status']]
+            );
+            return;
+        }
+
+        try {
+            $DB->insert('glpi_plugin_tasksmanager_automation_jobs', [
+                'tickets_id'          => $tickets_id,
+                'ticket_workflows_id' => $ticket_workflows_id,
+                'step_order'          => $step_order,
+                'workflow_steps_id'   => (int)($step['id'] ?? 0),
+                'tickettasks_id'      => $tickettasks_id,
+                'connector'           => mb_substr($connector, 0, 40),
+                'status'              => 'queued',
+                'date_creation'       => date('Y-m-d H:i:s'),
+            ]);
+        } catch (\Throwable $e) {
+            // Lost a race on the UNIQUE key — the other insert wins.
+            return;
+        }
+
+        self::logEvent(
+            'automation_queued',
+            $tickets_id,
+            $workflows_id,
+            $ticket_workflows_id,
+            $step_order,
+            ['automation_jobs_id' => (int)$DB->insertId(), 'connector' => $connector]
+        );
     }
 
     /**
@@ -881,11 +1002,34 @@ class Workflow extends CommonDBTM
 
     /**
      * Look up the answer value for `$question_id` in the AnswersSet that
-     * produced `$tickets_id`. Best-effort: returns null when GLPI Forms is
-     * not installed, the ticket wasn't created from a form, or the question
-     * has no answer.
+     * produced `$tickets_id`, lowercased for rule matching. Best-effort:
+     * returns null when GLPI Forms is not installed, the ticket wasn't
+     * created from a form, or the question has no answer.
      */
     private static function getFormAnswer(int $tickets_id, int $question_id): ?string
+    {
+        $value = self::resolveFormAnswer($tickets_id, $question_id);
+        return $value === null ? null : mb_strtolower($value);
+    }
+
+    /**
+     * Same lookup as getFormAnswer(), but case-preserved and with HTML
+     * entities decoded — for building outbound payloads (server name,
+     * domain FQDN, description), where "SRV-App01" must stay "SRV-App01".
+     * Rule matching keeps using the lowercased getFormAnswer().
+     */
+    public static function getFormAnswerRaw(int $tickets_id, int $question_id): ?string
+    {
+        $value = self::resolveFormAnswer($tickets_id, $question_id);
+        return $value === null ? null : html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    }
+
+    /**
+     * Shared lookup behind getFormAnswer() / getFormAnswerRaw(): the
+     * formatted answer (labels, not option UUIDs), tags stripped and
+     * trimmed, case untouched.
+     */
+    private static function resolveFormAnswer(int $tickets_id, int $question_id): ?string
     {
         global $DB;
 
@@ -947,7 +1091,7 @@ class Workflow extends CommonDBTM
             // visible "PRD" label, not the internal "1686595752" UUID.
             $resolved = self::formatFormAnswer((int)$question_id, $a, $raw);
             if ($resolved !== null) {
-                return mb_strtolower(trim(strip_tags((string)$resolved)));
+                return trim(strip_tags((string)$resolved));
             }
 
             // Fallback: raw value, flattened to a string. Works for
@@ -964,7 +1108,7 @@ class Workflow extends CommonDBTM
             } elseif ($raw === null) {
                 return null;
             }
-            return mb_strtolower(trim(strip_tags((string)$raw)));
+            return trim(strip_tags((string)$raw));
         }
         return null;
     }
@@ -1287,6 +1431,9 @@ class Workflow extends CommonDBTM
                 'workflows_id'     => $new_id,
                 'tasktemplates_id' => (int)$step['tasktemplates_id'],
                 'step_order'       => (int)$step['step_order'],
+                // Keep an automation step an automation step in the copy.
+                'step_type'         => (string)($step['step_type'] ?? self::STEP_TYPE_TASK),
+                'automation_config' => $step['automation_config'] ?? null,
                 'date_creation'    => date('Y-m-d H:i:s'),
             ]);
         }
