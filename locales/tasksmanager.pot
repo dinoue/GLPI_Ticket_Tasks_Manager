@@ -143,3 +143,191 @@ msgstr ""
 
 msgid "The config must be a JSON object"
 msgstr ""
+
+# 1.13.0 - vCenter provisioning (Build VM)
+msgid "-- None --"
+msgstr ""
+
+msgid "-- Select --"
+msgstr ""
+
+msgid "A VM named \"%s\" already exists in vCenter."
+msgstr ""
+
+msgid "A password is stored — leave empty to keep it"
+msgstr ""
+
+msgid "A static IP needs a customization spec"
+msgstr ""
+
+msgid "Add disk"
+msgstr ""
+
+msgid "At most 16 extra disks"
+msgstr ""
+
+msgid "Back to ticket %d"
+msgstr ""
+
+msgid "Between %1$d and %2$d"
+msgstr ""
+
+msgid "Build VM"
+msgstr ""
+
+msgid "CPU count must be a multiple of cores per socket"
+msgstr ""
+
+msgid "Cancelled"
+msgstr ""
+
+msgid "Cannot load the vCenter inventory:"
+msgstr ""
+
+msgid "Checked for duplicates in vCenter when you deploy. Windows computer names are limited to 15 characters."
+msgstr ""
+
+msgid "Cluster"
+msgstr ""
+
+msgid "Content library id (optional)"
+msgstr ""
+
+msgid "Cores per socket"
+msgstr ""
+
+msgid "Customization spec"
+msgstr ""
+
+msgid "Datastore"
+msgstr ""
+
+msgid "Deploy"
+msgstr ""
+
+msgid "Deploy this VM in vCenter now?"
+msgstr ""
+
+msgid "Deployment of %s queued. The ticket is updated when it finishes."
+msgstr ""
+
+msgid "Disk sizes are whole GB between 1 and 65536"
+msgstr ""
+
+msgid "Empty = DHCP / as in the spec"
+msgstr ""
+
+msgid "Extra disks (GB)"
+msgstr ""
+
+msgid "Failed"
+msgstr ""
+
+msgid "Folder"
+msgstr ""
+
+msgid "Gateway"
+msgstr ""
+
+msgid "Hardware"
+msgstr ""
+
+msgid "IP address"
+msgstr ""
+
+msgid "In addition to the template's own disks. Leave CPU / memory empty to keep the template values."
+msgstr ""
+
+msgid "Invalid content library id."
+msgstr ""
+
+msgid "Invalid value"
+msgstr ""
+
+msgid "Letters, digits and hyphens only; must not start or end with a hyphen."
+msgstr ""
+
+msgid "Limit the template list to one library. Empty = templates from every library."
+msgstr ""
+
+msgid "Memory (GB)"
+msgstr ""
+
+msgid "Network and guest OS"
+msgstr ""
+
+msgid "Not a valid IPv4 address"
+msgstr ""
+
+msgid "Prefix length"
+msgstr ""
+
+msgid "Provision VMs (automation steps)"
+msgstr ""
+
+msgid "Queued"
+msgstr ""
+
+msgid "Remove the stored password"
+msgstr ""
+
+msgid "Required"
+msgstr ""
+
+msgid "Running"
+msgstr ""
+
+msgid "Service account"
+msgstr ""
+
+msgid "Submitting"
+msgstr ""
+
+msgid "Succeeded"
+msgstr ""
+
+msgid "Template"
+msgstr ""
+
+msgid "Template and placement"
+msgstr ""
+
+msgid "The form answered \"%s\", which matches nothing in vCenter."
+msgstr ""
+
+msgid "This deployment has already been launched."
+msgstr ""
+
+msgid "This deployment is already %s."
+msgstr ""
+
+msgid "Use a dedicated account with a custom role limited to deploying from the content library, configuring VMs, applying customization and powering on."
+msgstr ""
+
+msgid "VLAN (port group)"
+msgstr ""
+
+msgid "VM name"
+msgstr ""
+
+msgid "Waiting for review"
+msgstr ""
+
+msgid "vCPU"
+msgstr ""
+
+msgid "vCenter"
+msgstr ""
+
+msgid "vCenter (content library)"
+msgstr ""
+
+msgid "vCenter URL"
+msgstr ""
+
+msgid "vCenter URL must be a valid https:// URL."
+msgstr ""
+
+msgid "vCenter steps wait for a technician to review the values (Build VM button on the ticket's Workflow tab) before deploying."
+msgstr ""
+

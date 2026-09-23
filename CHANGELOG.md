@@ -36,9 +36,31 @@ This project follows [Semantic Versioning](https://semver.org/).
   e.g. OS label → Aria image, entity → Aria project, bounded CPU/RAM. An
   unmapped value or out-of-range number fails the job **before**
   anything is sent.
+- **vCenter VM provisioning with a review page ("Build VM").** An
+  automation step can use the `vsphere` connector to deploy from a
+  **content-library VM template** directly in vCenter, with no Aria needed.
+  - With `"require_review": true` (the default for vCenter steps) the
+    job waits as a **draft**. The ticket's Workflow tab shows **Build VM**,
+    which opens a page prefilled from the form answers. Template, cluster,
+    folder, datastore, VLAN port group and customization spec are
+    dropdowns from vCenter. It also has CPU, cores per socket, memory,
+    extra disks and a static IP. **Deploy** re-validates, checks the VM
+    name is not already in vCenter, and queues the job.
+  - The cron then runs resumable phases: deploy (name, placement,
+    datastore, VLAN, CPU, RAM), add each extra disk, apply the
+    customization spec (hostname + static IP), power on. The VM stays off
+    until customization is applied. Success and failure follow the same
+    path as any automation step.
+  - New right **Provision VMs** (profile → Tasks Manager); deploying also
+    needs update access to the ticket.
+  - The Workflow tab shows the automation job's status (waiting for
+    review, queued, running, succeeded, failed with the error).
 - **Aria settings** on the plugin configuration page: URL (https only),
   refresh token (encrypted with the GLPI key, never displayed back), TLS
   verification. The access token is cached encrypted and refreshed on 401.
+- **vCenter settings**: URL, service account, password (encrypted,
+  write-only), optional content library id, TLS verification. The API
+  session is cached encrypted.
 
 ### Changed
 - `Workflow::getFormAnswerRaw()` (public): formatted, **case-preserved**
@@ -57,7 +79,10 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Internal
 - `Automation\ConnectorInterface` (`submit()` / `poll()`) in front of
-  `AriaConnector`, so another backend (e.g. AWX) is one more class.
+  `AriaConnector` and `VsphereConnector`, so another backend (e.g. AWX)
+  is one more class. `Result::$nextId` lets a connector report
+  multi-phase work; each phase is saved before it runs.
+- `front/provision.form.php` + `Automation\Provision` (review page).
 - AJAX actions `add_automation_step`, `save_step_automation`.
 
 ## [1.12.0] — 2026-07-15
