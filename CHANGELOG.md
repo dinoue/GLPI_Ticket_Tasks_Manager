@@ -3,6 +3,63 @@
 All notable changes to **Tasks Manager** are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.13.0] — 2026-09-23
+
+### Added
+- **Automation steps.** A third step type next to *Task* and
+  *Follow-up*: a blocking "To do" task (its template sets the
+  automation team) that sends a request to an external system, today
+  **VMware Aria Automation** catalog items. Add one with **"Add
+  automation step"** in the workflow editor, then fill in its **Automation
+  config** JSON on the step card.
+  - When the step is reached, `applyStep()` creates the task and
+    **queues a job — no HTTP call**. That code can run inside the
+    approver's `Ticket::update`, so a slow or failing remote call must not
+    affect their save.
+  - The **`automationjobs`** automatic action (every 2 min) builds the
+    inputs from form answers, submits the catalog request, and polls
+    the deployment on later runs.
+  - **Success:** posts a follow-up (VM name, IP address, deployment id)
+    and sets the task to Done. The existing auto-advance then handles
+    routing, reassignment and notifications as if a human had ticked it.
+  - **Failure:** reassigns the ticket to `failure_groups_id`, posts a
+    private follow-up with the error, and leaves the task in To do for a
+    technician. The step SLA / escalation covers jobs that hang.
+  - Safeguards: one job per step instance (a Restart or double-advance
+    can't provision twice); 5 consecutive transport errors fail the job;
+    `timeout_minutes` (default 240); an interrupted submission is failed
+    as "outcome unknown", never resubmitted; a job whose step was skipped
+    or removed before submission is cancelled.
+- **Mapping in `automation_config`.** Any value can be `"form:26"`,
+  `"ticket:entity"`, a `"GLPI-{ticket:id}"` template, a literal, or
+  `{"from", "map", "default", "required", "type", "min", "max"}` —
+  e.g. OS label → Aria image, entity → Aria project, bounded CPU/RAM. An
+  unmapped value or out-of-range number fails the job **before**
+  anything is sent.
+- **Aria settings** on the plugin configuration page: URL (https only),
+  refresh token (encrypted with the GLPI key, never displayed back), TLS
+  verification. The access token is cached encrypted and refreshed on 401.
+
+### Changed
+- `Workflow::getFormAnswerRaw()` (public): formatted, **case-preserved**
+  form answer for payloads (server names, FQDNs). Routing rules keep the
+  lowercased value — rule behaviour is unchanged.
+- Duplicating a workflow keeps each step's type and automation config.
+
+### Schema
+- `step_type` (`task` | `followup` | `automation`, existing follow-up
+  steps backfilled) and `automation_config` on
+  `glpi_plugin_tasksmanager_workflow_steps`.
+- New `glpi_plugin_tasksmanager_automation_jobs`, UNIQUE
+  (`ticket_workflows_id`, `step_order`).
+- New cron `GlpiPlugin\Tasksmanager\Automation\Runner::automationjobs`
+  (external mode).
+
+### Internal
+- `Automation\ConnectorInterface` (`submit()` / `poll()`) in front of
+  `AriaConnector`, so another backend (e.g. AWX) is one more class.
+- AJAX actions `add_automation_step`, `save_step_automation`.
+
 ## [1.12.0] — 2026-07-15
 
 ### Added

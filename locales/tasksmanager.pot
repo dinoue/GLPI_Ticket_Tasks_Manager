@@ -79,3 +79,67 @@ msgstr ""
 
 msgid "Tasks Manager - Global Overview"
 msgstr ""
+
+# 1.13.0 — automation steps
+msgid "Aria Automation"
+msgstr ""
+
+msgid "Aria URL"
+msgstr ""
+
+msgid "Refresh token"
+msgstr ""
+
+msgid "A token is stored — leave empty to keep it"
+msgstr ""
+
+msgid "Not set"
+msgstr ""
+
+msgid "Remove the stored token"
+msgstr ""
+
+msgid "Stored encrypted with the GLPI key. Used by automation steps from the \"automationjobs\" automatic action."
+msgstr ""
+
+msgid "Verify TLS certificate"
+msgstr ""
+
+msgid "Aria URL must be a valid https:// URL."
+msgstr ""
+
+msgid "Tasks Manager: run automation steps (submit and poll)"
+msgstr ""
+
+msgid "Automation completed successfully."
+msgstr ""
+
+msgid "Automation failed — the step needs to be completed manually."
+msgstr ""
+
+msgid "Unknown error"
+msgstr ""
+
+msgid "Automation"
+msgstr ""
+
+msgid "Automation config"
+msgstr ""
+
+msgid "Values: \"form:26\" (form answer), \"ticket:entity\", \"GLPI-{ticket:id}\", a literal, or {\"from\": …, \"map\": {…}, \"default\": …, \"required\": true, \"type\": \"int\", \"min\": 1, \"max\": 16}. failure_groups_id = group the ticket goes to if the automation fails."
+msgstr ""
+
+msgid "The task template sets the automation team and the task text"
+msgstr ""
+
+msgid "-- Select the automation task template --"
+msgstr ""
+
+msgid "Add automation step"
+msgstr ""
+
+msgid "An automation step creates a To-do task and sends a request (Aria catalog item) in the background. On success the task is closed and the workflow continues; on failure the ticket is reassigned and the task is left for a technician."
+msgstr ""
+
+msgid "The config must be a JSON object"
+msgstr ""
