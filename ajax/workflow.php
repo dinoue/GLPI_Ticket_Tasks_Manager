@@ -20,6 +20,8 @@
  *   update_template_comment   – update the linked task template's comment
  *   save_step_rules           – persist the JSON conditional-routing rules for a step
  *   add_followup_step         – add a follow-up-only step (no task template)
+ *   add_automation_step       – add an automation step (task template + automation_config)
+ *   save_step_automation      – persist an automation step's automation_config JSON
  *   save_step_sla             – persist per-step SLA + escalation config
  *   update_step_followup_template – set/clear the step's ITILFollowupTemplate
  *   list_form_questions       – return [{id,label}] of all defined form questions
@@ -130,6 +132,96 @@ switch ($action) {
             'step_id'    => (int)$DB->insertId(),
             'step_order' => $step_order,
         ]);
+
+    // ── Add an automation step (1.13.0) ───────────────────────────────────
+    // A To-do task from the chosen template (its tech/group = the
+    // automation team) plus a job the automationjobs cron submits. Starts
+    // with a skeleton automation_config to fill in on the step card.
+    case 'add_automation_step':
+        Session::checkRight('plugin_tasksmanager_workflows', UPDATE);
+
+        $workflows_id     = (int)($_POST['workflows_id']     ?? 0);
+        $tasktemplates_id = (int)($_POST['tasktemplates_id'] ?? 0);
+        if (!$workflows_id || !$tasktemplates_id) {
+            tm_respond(false, 400, 'Missing parameters');
+        }
+
+        $last = $DB->request([
+            'SELECT' => ['step_order'],
+            'FROM'   => 'glpi_plugin_tasksmanager_workflow_steps',
+            'WHERE'  => ['workflows_id' => $workflows_id],
+            'ORDER'  => ['step_order DESC'],
+            'LIMIT'  => 1,
+        ]);
+        $step_order = (count($last) > 0 ? (int)$last->current()['step_order'] : 0) + 10;
+
+        $skeleton = [
+            'connector'         => 'aria',
+            'catalog_item_id'   => '',
+            'project_id'        => ['from' => 'ticket:entity', 'map' => new stdClass()],
+            'deployment_name'   => 'GLPI-{ticket:id}',
+            'inputs'            => [
+                'hostname' => ['from' => 'form:0', 'required' => true],
+            ],
+            'failure_groups_id' => 0,
+            'timeout_minutes'   => 240,
+        ];
+
+        $DB->insert('glpi_plugin_tasksmanager_workflow_steps', [
+            'workflows_id'      => $workflows_id,
+            'tasktemplates_id'  => $tasktemplates_id,
+            'step_type'         => Workflow::STEP_TYPE_AUTOMATION,
+            'automation_config' => json_encode($skeleton, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
+            'step_order'        => $step_order,
+            'date_creation'     => date('Y-m-d H:i:s'),
+        ]);
+
+        tm_respond(true, 200, null, [
+            'step_id'    => (int)$DB->insertId(),
+            'step_order' => $step_order,
+        ]);
+
+    // ── Save an automation step's automation_config (1.13.0) ──────────────
+    // Body:
+    //   step_id           : int (must be an automation step)
+    //   automation_config : JSON object — see Automation\Mapping for specs
+    case 'save_step_automation':
+        Session::checkRight('plugin_tasksmanager_workflows', UPDATE);
+
+        $step_id = (int)($_POST['step_id'] ?? 0);
+        $raw     = (string)($_POST['automation_config'] ?? '');
+        if (!$step_id) {
+            tm_respond(false, 400, 'Missing step_id');
+        }
+        if (strlen($raw) > 60000) {
+            tm_respond(false, 400, 'automation_config is too large');
+        }
+
+        $cfg = json_decode($raw, true);
+        if (!is_array($cfg) || array_is_list($cfg)) {
+            tm_respond(false, 400, 'automation_config must be a JSON object');
+        }
+        $connector = (string)($cfg['connector'] ?? 'aria');
+        if (!in_array($connector, [\GlpiPlugin\Tasksmanager\Automation\AriaConnector::NAME], true)) {
+            tm_respond(false, 400, 'Unknown connector: ' . $connector);
+        }
+        if (isset($cfg['inputs']) && (!is_array($cfg['inputs']) || (array_is_list($cfg['inputs']) && $cfg['inputs'] !== []))) {
+            tm_respond(false, 400, '"inputs" must be an object of name → value spec');
+        }
+        foreach (['failure_groups_id', 'timeout_minutes'] as $int_key) {
+            if (isset($cfg[$int_key]) && (!is_int($cfg[$int_key]) || $cfg[$int_key] < 0)) {
+                tm_respond(false, 400, sprintf('"%s" must be a non-negative integer', $int_key));
+            }
+        }
+
+        $DB->update(
+            'glpi_plugin_tasksmanager_workflow_steps',
+            // Store the validated text as typed: re-encoding the decoded
+            // array would turn an empty {} map into [].
+            ['automation_config' => trim($raw)],
+            ['id' => $step_id, 'step_type' => Workflow::STEP_TYPE_AUTOMATION]
+        );
+        tm_respond(true);
 
     // ── Change the team a follow-up-only step assigns the ticket to ───────
     case 'save_followup_team':

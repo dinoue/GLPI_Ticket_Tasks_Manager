@@ -82,6 +82,8 @@ if (!$is_new) {
             'wfs.olas_id',
             'wfs.itilfollowuptemplates_id',
             'wfs.assign_groups_id',
+            'wfs.step_type',
+            'wfs.automation_config',
             'tt.name AS tpl_name',
             'tt.comment AS tpl_comment',
         ],
@@ -416,6 +418,11 @@ global $CFG_GLPI;
                                             <?= htmlspecialchars($step['tpl_name'] ?? '—') ?>
                                             <i class="ti ti-external-link ms-1 text-muted small"></i>
                                         </a>
+                                        <?php if (($step['step_type'] ?? '') === Workflow::STEP_TYPE_AUTOMATION): ?>
+                                            <span class="badge bg-purple-lt ms-1">
+                                                <i class="ti ti-robot me-1"></i><?= __('Automation', 'tasksmanager') ?>
+                                            </span>
+                                        <?php endif; ?>
                                     <?php else: ?>
                                         <?php // Follow-up-only step (no task template) ?>
                                         <span class="badge bg-azure-lt me-1">
@@ -508,6 +515,30 @@ global $CFG_GLPI;
                                 <?php if (!empty($step['tasktemplates_id'])): ?>
                                     <?= $sla_block_html ?>
                                 <?php endif; ?>
+                                <?php if (($step['step_type'] ?? '') === Workflow::STEP_TYPE_AUTOMATION): ?>
+                                    <button type="button"
+                                            class="btn btn-sm btn-link p-0 text-decoration-none tm-toggle-automation ms-2"
+                                            onclick="tmToggleAutomation(this)">
+                                        <i class="ti ti-chevron-right me-1"></i><?= __('Automation config', 'tasksmanager') ?>
+                                    </button>
+                                    <div class="tm-flow-automation" style="display:none">
+                                        <textarea class="form-control form-control-sm font-monospace tm-automation-json"
+                                                  rows="14" spellcheck="false"
+                                        ><?= htmlspecialchars((string)($step['automation_config'] ?? '')) ?></textarea>
+                                        <div class="d-flex justify-content-between align-items-center mt-1">
+                                            <button type="button" class="btn btn-sm btn-outline-primary"
+                                                    data-step-id="<?= (int)$step['id'] ?>"
+                                                    onclick="tmSaveAutomation(this)">
+                                                <i class="ti ti-device-floppy me-1"></i><?= __('Save') ?>
+                                            </button>
+                                            <span class="tm-automation-status text-muted small"></span>
+                                        </div>
+                                        <div class="text-muted small mt-1">
+                                            <i class="ti ti-info-circle me-1"></i>
+                                            <?= __('Values: "form:26" (form answer), "ticket:entity", "GLPI-{ticket:id}", a literal, or {"from": …, "map": {…}, "default": …, "required": true, "type": "int", "min": 1, "max": 16}. failure_groups_id = group the ticket goes to if the automation fails.', 'tasksmanager') ?>
+                                        </div>
+                                    </div>
+                                <?php endif; ?>
                                 <?= $fup_block_html ?>
                             </div>
                             <div class="tm-flow-actions">
@@ -558,6 +589,24 @@ global $CFG_GLPI;
             <div class="text-muted small mt-1">
                 <i class="ti ti-info-circle me-1"></i>
                 <?= __('A follow-up step posts a message on the ticket (no task) and the workflow continues automatically.', 'tasksmanager') ?>
+            </div>
+
+            <!-- Add automation step (task + outbound request, e.g. Aria) -->
+            <div class="d-flex gap-2 align-items-center mt-3 flex-wrap">
+                <select id="tm-new-auto-tpl" class="form-select form-select-sm" style="max-width:400px"
+                        title="<?= __('The task template sets the automation team and the task text', 'tasksmanager') ?>">
+                    <option value=""><?= __('-- Select the automation task template --', 'tasksmanager') ?></option>
+                    <?php foreach ($all_templates as $tpl): ?>
+                        <option value="<?= (int)$tpl['id'] ?>"><?= htmlspecialchars($tpl['name']) ?></option>
+                    <?php endforeach; ?>
+                </select>
+                <button type="button" class="btn btn-outline-primary btn-sm" onclick="tmAddAutomationStep()">
+                    <i class="ti ti-robot me-1"></i><?= __('Add automation step', 'tasksmanager') ?>
+                </button>
+            </div>
+            <div class="text-muted small mt-1">
+                <i class="ti ti-info-circle me-1"></i>
+                <?= __('An automation step creates a To-do task and sends a request (Aria catalog item) in the background. On success the task is closed and the workflow continues; on failure the ticket is reassigned and the task is left for a technician.', 'tasksmanager') ?>
             </div>
 
         </div>
@@ -653,6 +702,61 @@ global $CFG_GLPI;
         }).then(resp => {
             if (!resp.ok) { alert(resp.error || 'Error'); return; }
             window.location.reload();
+        });
+    };
+
+    // Add an automation step — reloads like the follow-up step, since the
+    // card carries the automation config editor.
+    window.tmAddAutomationStep = function () {
+        const sel = document.getElementById('tm-new-auto-tpl');
+        if (!sel.value) return;
+        post({
+            action: 'add_automation_step',
+            workflows_id: WORKFLOW_ID,
+            tasktemplates_id: sel.value,
+        }).then(resp => {
+            if (!resp.ok) { alert(resp.error || 'Error'); return; }
+            window.location.reload();
+        });
+    };
+
+    window.tmToggleAutomation = function (btn) {
+        const panel = btn.parentElement.querySelector('.tm-flow-automation');
+        if (!panel) return;
+        const open = panel.style.display === 'none';
+        panel.style.display = open ? '' : 'none';
+        const chevron = btn.querySelector('i');
+        if (chevron) chevron.className = open ? 'ti ti-chevron-down me-1' : 'ti ti-chevron-right me-1';
+    };
+
+    window.tmSaveAutomation = function (btn) {
+        const panel  = btn.closest('.tm-flow-automation');
+        const ta     = panel.querySelector('.tm-automation-json');
+        const status = panel.querySelector('.tm-automation-status');
+        try {
+            const parsed = JSON.parse(ta.value);
+            if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                throw new Error('<?= __('The config must be a JSON object', 'tasksmanager') ?>');
+            }
+        } catch (e) {
+            status.textContent = e.message;
+            status.classList.add('text-danger');
+            return;
+        }
+        status.classList.remove('text-danger');
+        status.textContent = '<?= __('Saving…', 'tasksmanager') ?>';
+        post({
+            action: 'save_step_automation',
+            step_id: btn.dataset.stepId,
+            automation_config: ta.value,
+        }).then(resp => {
+            if (!resp.ok) {
+                status.textContent = resp.error || 'Error';
+                status.classList.add('text-danger');
+                return;
+            }
+            status.textContent = '<?= __('Saved', 'tasksmanager') ?>';
+            setTimeout(() => { status.textContent = ''; }, 1500);
         });
     };
 
