@@ -374,3 +374,11 @@ msgstr ""
 msgid "Waiting for a technician with the \"Provision VMs\" right (Administration → Profiles → Tasks Manager) to review and deploy."
 msgstr ""
 
+
+# 1.13.0 - Build VM in the timeline footer
+msgid "Review the VM values filled from the form, then deploy it in vCenter."
+msgstr ""
+
+msgid "Use the \"Build VM\" button at the bottom of the ticket timeline to review and deploy."
+msgstr ""
+

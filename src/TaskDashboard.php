@@ -522,9 +522,11 @@ class TaskDashboard extends CommonGLPI
         }
         if ($job['status'] === 'draft' && $job['connector'] === Automation\VsphereConnector::NAME) {
             if (Automation\Provision::canDeploy($job)) {
-                $url = Plugin::getWebDir('tasksmanager') . '/front/provision.form.php?job=' . (int)$job['id'];
-                echo '<a class="btn btn-sm btn-primary ms-auto" href="' . htmlspecialchars($url) . '">'
-                    . '<i class="ti ti-server-2 me-1"></i>' . __('Build VM', 'tasksmanager') . '</a>';
+                // The button itself lives in the timeline footer (next to
+                // Answer / Task / Solution) — see the timeline_actions hook.
+                echo '<span class="text-muted small w-100">'
+                    . __('Use the "Build VM" button at the bottom of the ticket timeline to review and deploy.', 'tasksmanager')
+                    . '</span>';
             } else {
                 // Say why there's no button instead of silently hiding it.
                 echo '<span class="text-muted small w-100">'

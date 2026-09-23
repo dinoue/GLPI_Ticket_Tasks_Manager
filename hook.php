@@ -771,6 +771,52 @@ function plugin_tasksmanager_apply_workflow_step(int $tickets_id, array $step, i
 }
 
 /**
+ * "Build VM" in the timeline footer, next to Answer / Task / Solution —
+ * shown only while the active workflow's current step has a vCenter job
+ * waiting for review, and only to users allowed to deploy it. Links to
+ * the review page; nothing is deployed from here.
+ */
+function plugin_tasksmanager_render_build_vm_button(int $tickets_id): void
+{
+    global $DB;
+
+    $tw = $DB->request([
+        'SELECT' => ['id', 'current_step'],
+        'FROM'   => 'glpi_plugin_tasksmanager_ticket_workflows',
+        'WHERE'  => ['tickets_id' => $tickets_id, 'status' => 'active'],
+        'LIMIT'  => 1,
+    ]);
+    if (count($tw) === 0) {
+        return;
+    }
+    $tw  = $tw->current();
+    $job = \GlpiPlugin\Tasksmanager\Automation\Provision::getCurrentJob((int)$tw['id'], (int)$tw['current_step']);
+    if (
+        $job === null
+        || $job['status'] !== 'draft'
+        || $job['connector'] !== \GlpiPlugin\Tasksmanager\Automation\VsphereConnector::NAME
+        || !\GlpiPlugin\Tasksmanager\Automation\Provision::canDeploy($job)
+    ) {
+        return;
+    }
+
+    $url   = Plugin::getWebDir('tasksmanager') . '/front/provision.form.php?job=' . (int)$job['id'];
+    $label = htmlspecialchars(__('Build VM', 'tasksmanager'), ENT_QUOTES);
+    $title = htmlspecialchars(__('Review the VM values filled from the form, then deploy it in vCenter.', 'tasksmanager'), ENT_QUOTES);
+
+    // Same pastel treatment as "Recommended solution", in violet so the
+    // two are told apart; dark text keeps AA contrast.
+    echo '<li class="tm-build-vm-li" style="list-style:none;display:inline-block">';
+    echo '<a class="btn ms-2 tm-btn-build-vm" href="' . htmlspecialchars($url, ENT_QUOTES) . '" title="' . $title . '">'
+        . '<i class="ti ti-server-2 me-1"></i>' . $label . '</a>';
+    echo '</li>';
+    echo '<style>'
+        . '.tm-btn-build-vm{background-color:rgb(229,219,255)!important;border-color:rgb(229,219,255)!important;color:#3b2a6b!important;font-weight:500;}'
+        . '.tm-btn-build-vm:hover,.tm-btn-build-vm:focus{background-color:rgb(211,196,250)!important;border-color:rgb(211,196,250)!important;color:#3b2a6b!important;}'
+        . '</style>';
+}
+
+/**
  * Timeline-actions hook callback.
  *
  * Renders a "Recommended solution" button into the ticket / change /
@@ -816,6 +862,8 @@ function plugin_tasksmanager_timeline_actions(array $params): void
     ) {
         return;
     }
+
+    plugin_tasksmanager_render_build_vm_button($tickets_id);
 
     // Most recent completed workflow on this ticket that has a suggested
     // solution template configured. If multiple workflows have run
