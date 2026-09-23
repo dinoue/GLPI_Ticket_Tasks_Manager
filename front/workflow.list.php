@@ -75,6 +75,12 @@ echo '<div class="d-flex gap-2">';
 echo '<a href="analytics.php" class="btn btn-outline-secondary">';
 echo '<i class="ti ti-chart-bar me-1"></i>' . __('Analytics', 'tasksmanager');
 echo '</a>';
+// Plugin settings (Aria / vCenter connections) — same right the page checks.
+if (Session::haveRight('config', UPDATE)) {
+    echo '<a href="config.form.php" class="btn btn-outline-secondary">';
+    echo '<i class="ti ti-settings me-1"></i>' . __('Settings', 'tasksmanager');
+    echo '</a>';
+}
 if ($can_edit) {
     echo '<a href="workflow.form.php" class="btn btn-primary">';
     echo '<i class="ti ti-plus me-1"></i>' . __('Add workflow', 'tasksmanager');

@@ -60,6 +60,12 @@ class Workflow extends CommonDBTM
                 Plugin::getWebDir('tasksmanager', false) . '/front/analytics.php';
         }
 
+        if (Session::haveRight('config', UPDATE)) {
+            // Plugin settings (Aria / vCenter connections), gear icon.
+            $menu['links']['<i class="ti ti-settings"></i>'] =
+                Plugin::getWebDir('tasksmanager', false) . '/front/config.form.php';
+        }
+
         return $menu;
     }
 

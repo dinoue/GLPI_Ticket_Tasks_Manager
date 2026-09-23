@@ -331,3 +331,6 @@ msgstr ""
 msgid "vCenter steps wait for a technician to review the values (Build VM button on the ticket's Workflow tab) before deploying."
 msgstr ""
 
+msgid "Settings"
+msgstr ""
+
