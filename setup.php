@@ -13,13 +13,17 @@ use GlpiPlugin\Tasksmanager\Workflow;
 
 define('PLUGIN_TASKSMANAGER_VERSION', '1.13.0');
 define('PLUGIN_TASKSMANAGER_MIN_GLPI_VERSION', '11.0.0');
-define('PLUGIN_TASKSMANAGER_MAX_GLPI_VERSION', '11.0.99');
+define('PLUGIN_TASKSMANAGER_MAX_GLPI_VERSION', '11.99.99');
 
 function plugin_init_tasksmanager(): void
 {
     global $PLUGIN_HOOKS;
 
-    $PLUGIN_HOOKS[Hooks::CSRF_COMPLIANT]['tasksmanager'] = true;
+    // Literal key, not Hooks::CSRF_COMPLIANT: GLPI 12 removed that
+    // constant, and referencing it is a fatal at plugin load (it
+    // surfaces as the misleading "function plugin_<slug>_install is
+    // missing"). GLPI 11 and 12 both read the string key identically.
+    $PLUGIN_HOOKS['csrf_compliant']['tasksmanager'] = true;
 
     // Wrench icon on Setup > Plugins → opens the workflow list.
     $PLUGIN_HOOKS['config_page']['tasksmanager'] = 'front/workflow.list.php';
